@@ -1,3 +1,4 @@
+import type { ChannelRegionListResult } from "@/lib/ad-free/channel-region-list";
 import type { AdFreeStreamPayload } from "@/lib/ad-free/resolve-stream";
 import type {
   DownloadRequest,
@@ -46,7 +47,8 @@ export const MessageType = {
   ReportPageProgress: "reportPageProgress",
   PageSabrFetch: "pageSabrFetch",
   OpenAdFreePlayer: "openAdFreePlayer",
-  ResolveAdFreeStream: "resolveAdFreeStream"
+  ResolveAdFreeStream: "resolveAdFreeStream",
+  ResolveChannelRegionList: "resolveChannelRegionList"
 } as const;
 
 export type PageSabrFetchRequest = Prettify<{
@@ -294,6 +296,11 @@ export interface ProtocolMap {
   resolveAdFreeStream(data: {
     videoId: string;
   }): AdFreeStreamPayload;
+
+  resolveChannelRegionList(data: {
+    channelId: string;
+    gl?: string;
+  }): ChannelRegionListResult;
 }
 
 export const { sendMessage, onMessage } =

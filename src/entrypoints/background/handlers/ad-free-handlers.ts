@@ -1,4 +1,5 @@
 import { createPageProxyFetch } from "../download/page-proxy-fetch";
+import { fetchChannelVideosWithGl } from "@/lib/ad-free/channel-region-list";
 import { AD_FREE_VISITOR_DATA_KEY } from "@/lib/ad-free/constants";
 import {
   type AdFreeStreamPayload,
@@ -89,5 +90,37 @@ export function registerAdFreeHandlers() {
   onMessage(MessageType.OpenAdFreePlayer, async ({ data, sender }) => {
     const payload = await resolveAdFreeStream(data.videoId, sender.tab?.id);
     await storeStreamPayload(payload);
+  });
+
+  onMessage(MessageType.ResolveChannelRegionList, async ({ data, sender }) => {
+    const youtubeTabId = await findYouTubeTabId(sender.tab?.id);
+    const gl = data.gl ?? "US";
+    const errors: string[] = [];
+
+    if (youtubeTabId != null) {
+      try {
+        const pageProxyFetch = createPageProxyFetch(youtubeTabId);
+        return await fetchChannelVideosWithGl({
+          channelId: data.channelId,
+          gl,
+          customFetch: pageProxyFetch
+        });
+      } catch (error) {
+        errors.push(`page-proxy: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    } else {
+      errors.push("page-proxy: no YouTube tab open");
+    }
+
+    try {
+      return await fetchChannelVideosWithGl({
+        channelId: data.channelId,
+        gl
+      });
+    } catch (error) {
+      errors.push(`background: ${error instanceof Error ? error.message : String(error)}`);
+    }
+
+    throw new Error(`Could not load channel list (${errors.join(" | ")})`);
   });
 }

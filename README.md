@@ -15,6 +15,7 @@ Built on top of [avi12/youtube-downloader](https://github.com/avi12/youtube-down
 - **State sync** — switching between YouTube and Ad-Free keeps current time (and pauses on switch)
 - **Keep playing** — playback continues when you focus another OS window (best-effort against Chrome media pause)
 - **Downloads** — full upstream download / playlist / FFmpeg mux pipeline remains available
+- **Region-hidden channel list (MVP)** — on a channel **Videos** tab, use **Region-hidden** to list uploads visible via `gl=US` but missing from your local grid
 
 ## Install (development build)
 
@@ -42,6 +43,15 @@ Then load `.output/firefox-mv3` via `about:debugging` → This Firefox → Load 
 3. Wait for the overlay player to load, then press play
 4. Click **YouTube** on the same control to switch back (position is preserved; both sides pause on switch)
 5. In the Ad-Free player: **Settings** for quality and captions
+
+### Region-hidden videos (list only)
+
+1. Open a channel **Videos** tab (`/@handle/videos` or `/channel/UC…/videos`)
+2. Click the floating **Region-hidden** button (bottom-right)
+3. The panel compares videos on the page with the channel uploads playlist fetched with InnerTube `gl=US`
+4. Items only in the remote list are shown with a **REGION** badge (links open normal YouTube watch — playback bypass is not included yet)
+
+This is a first pass (single reference region). Multi-`gl` merge can be added later.
 
 ## Develop
 
