@@ -17,22 +17,27 @@ import { MessageType, sendMessage } from "@/lib/messaging/messaging";
 
 const BUTTON_ID = "ytdl-ad-free-btn";
 const STYLE_ID = "ytdl-ad-free-btn-style";
+const ROOT_ID = "ytdl-ad-free-root";
 const OVERLAY_ID = "ytdl-ad-free-overlay";
 const IFRAME_ID = "ytdl-ad-free-iframe";
-const PARK_ID = "ytdl-ad-free-park";
 const HOST_ACTIVE_CLASS = "ytdl-ad-free-active";
-const HOST_HIDDEN_CLASS = "ytdl-ad-free-hidden";
+const ROOT_ACTIVE_CLASS = "is-active";
 const OBSERVER_DISCONNECT_MS = 30_000;
 const BRIDGE_TIMEOUT_MS = 4_000;
-/** Skip seek when times are close — avoids a visual "reload" on quick toggles. */
 const SEEK_EPSILON_SEC = 0.75;
 
+/**
+ * IMPORTANT: Never reparent the iframe.
+ * Moving an <iframe> in the DOM reloads its document in Chromium, which looks
+ * like the Ad-Free video "refreshed" on every toggle. The root stays on
+ * documentElement; we only change CSS (position/size/visibility).
+ */
 const BUTTON_CSS = `
 #${BUTTON_ID} {
   position: absolute;
   top: 12px;
   left: 12px;
-  z-index: 80;
+  z-index: 3;
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -82,40 +87,35 @@ const BUTTON_CSS = `
   background: #0f0;
   box-shadow: 0 0 0 2px rgba(0, 255, 0, 0.25);
 }
-.html5-video-player #${BUTTON_ID},
-#movie_player #${BUTTON_ID},
-#ytd-player #${BUTTON_ID} {
-  position: absolute;
+
+/* Stable shell: never reparented; only bounds + visibility change */
+#${ROOT_ID} {
+  position: fixed;
+  z-index: 2147483000;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  box-sizing: border-box;
+  pointer-events: none;
+  overflow: visible;
+}
+#${ROOT_ID} #${BUTTON_ID} {
+  pointer-events: auto;
 }
 #${OVERLAY_ID} {
   position: absolute;
   inset: 0;
-  z-index: 55;
+  z-index: 1;
   background: #000;
   display: flex;
-  align-items: stretch;
-  justify-content: stretch;
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
 }
-#${OVERLAY_ID}.${HOST_HIDDEN_CLASS} {
-  display: none !important;
-}
-/* Keep-alive parking lot: outside #movie_player so YT re-renders cannot destroy the iframe */
-#${PARK_ID} {
-  position: fixed !important;
-  left: -99999px !important;
-  top: 0 !important;
-  width: 2px !important;
-  height: 2px !important;
-  overflow: hidden !important;
-  opacity: 0 !important;
-  pointer-events: none !important;
-  z-index: -1 !important;
-}
-#${PARK_ID} #${OVERLAY_ID} {
-  position: static !important;
-  inset: auto !important;
-  width: 2px !important;
-  height: 2px !important;
+#${ROOT_ID}.${ROOT_ACTIVE_CLASS} #${OVERLAY_ID} {
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
 }
 #${IFRAME_ID} {
   width: 100%;
@@ -124,6 +124,7 @@ const BUTTON_CSS = `
   display: block;
   background: #000;
 }
+
 #movie_player.${HOST_ACTIVE_CLASS} .html5-video-container,
 #movie_player.${HOST_ACTIVE_CLASS} .ytp-chrome-bottom,
 #movie_player.${HOST_ACTIVE_CLASS} .ytp-chrome-top,
@@ -133,7 +134,6 @@ const BUTTON_CSS = `
   visibility: hidden !important;
   pointer-events: none !important;
 }
-/* Hide YouTube ad chrome while Ad-Free overlay is active */
 #movie_player.${HOST_ACTIVE_CLASS} .video-ads,
 #movie_player.${HOST_ACTIVE_CLASS} .ytp-ad-module,
 #movie_player.${HOST_ACTIVE_CLASS} .ytp-ad-player-overlay-layout,
@@ -181,6 +181,8 @@ let isAdFreeActive = false;
 let activeVideoId: string | null = null;
 let isPlayerReady = false;
 let lastSnapshot: AdFreePlaybackSnapshot | null = null;
+let layoutRafId = 0;
+let layoutListening = false;
 
 function getVideoId(): string | null {
   const url = new URL(location.href);
@@ -269,7 +271,6 @@ function captureYouTubeSnapshot(videoId: string): AdFreePlaybackSnapshot {
 
   let wasPlaying = false;
   try {
-    // YT player states: 1 = playing
     wasPlaying = elPlayer?.getPlayerState?.() === 1
       || Boolean(elVideo && !elVideo.paused && !elVideo.ended);
   } catch {
@@ -356,7 +357,6 @@ function applyYouTubeSnapshot(snapshot: AdFreePlaybackSnapshot, forcePause: bool
     elVideo.muted = snapshot.muted;
   }
 
-  // On player switch always pause (user can press play).
   if (forcePause || !snapshot.wasPlaying) {
     pauseYouTubePlayer();
     return;
@@ -373,9 +373,12 @@ function getIframe(): HTMLIFrameElement | null {
   return document.getElementById(IFRAME_ID) as HTMLIFrameElement | null;
 }
 
+function getRoot(): HTMLElement | null {
+  return document.getElementById(ROOT_ID);
+}
+
 function postToPlayer(message: AdFreeBridgeToPlayer) {
-  const elIframe = getIframe();
-  elIframe?.contentWindow?.postMessage(message, "*");
+  getIframe()?.contentWindow?.postMessage(message, "*");
 }
 
 function waitForBridgeMessage<T extends AdFreeBridgeFromPlayer>(
@@ -455,8 +458,7 @@ async function pushSnapshotToPlayer(
   forcePause: boolean
 ): Promise<void> {
   lastSnapshot = snapshot;
-  const elIframe = getIframe();
-  if (!elIframe?.contentWindow) {
+  if (!getIframe()?.contentWindow) {
     return;
   }
 
@@ -469,7 +471,6 @@ async function pushSnapshotToPlayer(
     forcePause
   });
 
-  // Best-effort wait; don't block forever if player is still loading
   try {
     await waitForBridgeMessage(
       (message): message is Extract<AdFreeBridgeFromPlayer, { action: "set-state-done" }> =>
@@ -482,87 +483,190 @@ async function pushSnapshotToPlayer(
   }
 }
 
-function getPark(): HTMLElement {
-  let elPark = document.getElementById(PARK_ID);
-  if (!elPark) {
-    elPark = document.createElement("div");
-    elPark.id = PARK_ID;
-    elPark.setAttribute("aria-hidden", "true");
-    // Prefer html over body — body can be rebuilt less often than movie_player, html even less
-    (document.documentElement ?? document.body).append(elPark);
+function syncRootLayout() {
+  const elRoot = getRoot();
+  const elHost = getPlayerHost();
+  if (!elRoot) {
+    return;
   }
-  return elPark;
+  if (!elHost) {
+    elRoot.style.visibility = "hidden";
+    return;
+  }
+
+  const rect = elHost.getBoundingClientRect();
+  if (rect.width < 2 || rect.height < 2) {
+    elRoot.style.visibility = "hidden";
+    return;
+  }
+
+  elRoot.style.visibility = "visible";
+  elRoot.style.top = `${Math.round(rect.top)}px`;
+  elRoot.style.left = `${Math.round(rect.left)}px`;
+  elRoot.style.width = `${Math.round(rect.width)}px`;
+  elRoot.style.height = `${Math.round(rect.height)}px`;
+}
+
+function scheduleLayoutSync() {
+  if (layoutRafId) {
+    return;
+  }
+  layoutRafId = window.requestAnimationFrame(() => {
+    layoutRafId = 0;
+    syncRootLayout();
+  });
+}
+
+function startLayoutTracking() {
+  if (layoutListening) {
+    return;
+  }
+  layoutListening = true;
+  window.addEventListener("resize", scheduleLayoutSync, true);
+  window.addEventListener("scroll", scheduleLayoutSync, true);
+  // YouTube theater / fullscreen / flex layout
+  document.addEventListener("yt-action", scheduleLayoutSync, true);
+  document.addEventListener("fullscreenchange", scheduleLayoutSync, true);
+}
+
+function stopLayoutTracking() {
+  if (!layoutListening) {
+    return;
+  }
+  layoutListening = false;
+  window.removeEventListener("resize", scheduleLayoutSync, true);
+  window.removeEventListener("scroll", scheduleLayoutSync, true);
+  document.removeEventListener("yt-action", scheduleLayoutSync, true);
+  document.removeEventListener("fullscreenchange", scheduleLayoutSync, true);
+  if (layoutRafId) {
+    window.cancelAnimationFrame(layoutRafId);
+    layoutRafId = 0;
+  }
+}
+
+function setHostActive(isActive: boolean) {
+  document.querySelectorAll(`.${HOST_ACTIVE_CLASS}`).forEach(el => {
+    el.classList.remove(HOST_ACTIVE_CLASS);
+  });
+  if (!isActive) {
+    return;
+  }
+  const elHost = getPlayerHost();
+  elHost?.classList.add(HOST_ACTIVE_CLASS);
 }
 
 function hideOverlayKeepAlive() {
-  const elOverlay = document.getElementById(OVERLAY_ID);
-  if (elOverlay) {
-    elOverlay.classList.add(HOST_HIDDEN_CLASS);
-    // Move out of #movie_player so YouTube SPA/player re-renders cannot drop the iframe
-    getPark().append(elOverlay);
-  }
-  document.querySelectorAll(`.${HOST_ACTIVE_CLASS}`).forEach(el => {
-    el.classList.remove(HOST_ACTIVE_CLASS);
-  });
+  const elRoot = getRoot();
+  elRoot?.classList.remove(ROOT_ACTIVE_CLASS);
+  setHostActive(false);
+  // Keep root sized over the player so the toggle button still sits on the video
+  syncRootLayout();
 }
 
-function showOverlay(elHost: HTMLElement) {
-  const elOverlay = document.getElementById(OVERLAY_ID);
-  if (!elOverlay) {
+function showOverlayActive() {
+  const elRoot = getRoot();
+  if (!elRoot) {
     return;
   }
-  elOverlay.classList.remove(HOST_HIDDEN_CLASS);
-  // Always re-attach to the live player host (may be a new node after YT re-render)
-  elHost.append(elOverlay);
-  elHost.classList.add(HOST_ACTIVE_CLASS);
+  elRoot.classList.add(ROOT_ACTIVE_CLASS);
+  setHostActive(true);
+  syncRootLayout();
 }
 
 function destroyOverlay() {
-  document.getElementById(OVERLAY_ID)?.remove();
-  document.getElementById(PARK_ID)?.remove();
-  document.querySelectorAll(`.${HOST_ACTIVE_CLASS}`).forEach(el => {
-    el.classList.remove(HOST_ACTIVE_CLASS);
-  });
+  stopLayoutTracking();
+  document.getElementById(ROOT_ID)?.remove();
+  setHostActive(false);
   isPlayerReady = false;
 }
 
-/**
- * Returns true only when a brand-new iframe was created (full load).
- * Same videoId reuses the parked keep-alive iframe — no reload.
- */
-function ensureOverlay(videoId: string, elHost: HTMLElement, startAt = 0): boolean {
-  const elExistingOverlay = document.getElementById(OVERLAY_ID);
-  const elExistingIframe = getIframe();
+function createButton(): HTMLButtonElement {
+  const elButton = document.createElement("button");
+  elButton.id = BUTTON_ID;
+  elButton.type = "button";
+  setButtonContent(elButton, "Ad-Free", { isActive: false });
 
-  if (elExistingOverlay && elExistingIframe?.dataset.videoId === videoId) {
-    // Keep-alive hit: never touch iframe.src
-    showOverlay(elHost);
+  const stopPlayerClick = (e: Event) => {
+    e.stopPropagation();
+  };
+
+  elButton.addEventListener("mousedown", stopPlayerClick);
+  elButton.addEventListener("mouseup", stopPlayerClick);
+  elButton.addEventListener("pointerdown", stopPlayerClick);
+  elButton.addEventListener("click", e => {
+    e.preventDefault();
+    e.stopPropagation();
+    void toggleAdFree(elButton);
+  });
+
+  return elButton;
+}
+
+/**
+ * Ensure stable root + iframe exist. Returns true only on first iframe create.
+ * Never reparents the iframe after creation.
+ */
+function ensureOverlay(videoId: string, startAt = 0): boolean {
+  ensureStyles();
+  startLayoutTracking();
+
+  let elRoot = getRoot();
+  let elIframe = getIframe();
+  let elOverlay = document.getElementById(OVERLAY_ID);
+  let elButton = document.getElementById(BUTTON_ID) as HTMLButtonElement | null;
+
+  // Same video keep-alive: only toggle CSS
+  if (elRoot && elIframe?.dataset.videoId === videoId && elOverlay) {
+    if (!elButton) {
+      elRoot.append(createButton());
+    }
+    syncRootLayout();
     return false;
   }
 
-  if (elExistingOverlay || elExistingIframe) {
-    // Different video (or broken pair): tear down and recreate
+  // Different video: full recreate allowed
+  if (elRoot && elIframe && elIframe.dataset.videoId !== videoId) {
     destroyOverlay();
+    elRoot = null;
+    elIframe = null;
+    elOverlay = null;
+    elButton = null;
   }
 
-  const elOverlay = document.createElement("div");
-  elOverlay.id = OVERLAY_ID;
+  if (!elRoot) {
+    elRoot = document.createElement("div");
+    elRoot.id = ROOT_ID;
+    document.documentElement.append(elRoot);
+  }
 
-  const elIframe = document.createElement("iframe");
-  elIframe.id = IFRAME_ID;
-  elIframe.dataset.videoId = videoId;
-  elIframe.allow = "autoplay; fullscreen; picture-in-picture";
-  elIframe.allowFullscreen = true;
-  // Only set src on first create for this videoId
-  elIframe.src = browser.runtime.getURL(
-    `/${AD_FREE_PLAYER_PATH}?v=${encodeURIComponent(videoId)}&embed=1&t=${encodeURIComponent(String(startAt))}&paused=1` as `/ad-free-player.html${string}`
-  );
+  if (!elOverlay) {
+    elOverlay = document.createElement("div");
+    elOverlay.id = OVERLAY_ID;
+    elRoot.append(elOverlay);
+  }
 
-  elOverlay.append(elIframe);
-  elHost.append(elOverlay);
-  elHost.classList.add(HOST_ACTIVE_CLASS);
-  isPlayerReady = false;
-  return true;
+  let didCreateIframe = false;
+  if (!elIframe) {
+    elIframe = document.createElement("iframe");
+    elIframe.id = IFRAME_ID;
+    elIframe.dataset.videoId = videoId;
+    elIframe.allow = "autoplay; fullscreen; picture-in-picture";
+    elIframe.allowFullscreen = true;
+    // Set src exactly once per videoId lifetime of this iframe node
+    elIframe.src = browser.runtime.getURL(
+      `/${AD_FREE_PLAYER_PATH}?v=${encodeURIComponent(videoId)}&embed=1&t=${encodeURIComponent(String(startAt))}&paused=1` as `/ad-free-player.html${string}`
+    );
+    elOverlay.append(elIframe);
+    isPlayerReady = false;
+    didCreateIframe = true;
+  }
+
+  if (!document.getElementById(BUTTON_ID)) {
+    elRoot.append(createButton());
+  }
+
+  syncRootLayout();
+  return didCreateIframe;
 }
 
 async function waitForPlayerReady(videoId: string, timeoutMs = BRIDGE_TIMEOUT_MS) {
@@ -578,7 +682,7 @@ async function waitForPlayerReady(videoId: string, timeoutMs = BRIDGE_TIMEOUT_MS
     );
     isPlayerReady = true;
   } catch {
-    // Player may already be interactive even without ready event
+    // ignore
   }
 }
 
@@ -604,8 +708,7 @@ async function mergePageCaptions(payload: AdFreeStreamPayload): Promise<AdFreeSt
 
 async function enableAdFree(elButton: HTMLButtonElement) {
   const videoId = getVideoId();
-  const elHost = getPlayerHost();
-  if (!videoId || !elHost) {
+  if (!videoId || !getPlayerHost()) {
     return;
   }
 
@@ -613,68 +716,61 @@ async function enableAdFree(elButton: HTMLButtonElement) {
   setButtonContent(elButton, "Loading...", { withDot: false, isActive: false });
 
   try {
-    // Capture YT state first (while still current)
     const ytSnapshot = captureYouTubeSnapshot(videoId);
     lastSnapshot = ytSnapshot;
-
-    // Pause YT immediately on switch
     pauseYouTubePlayer();
-
     await persistVisitorData();
 
     const existingIframe = getIframe();
     const isKeepAliveSameVideo = existingIframe?.dataset.videoId === videoId;
 
-    // Resolve streams only when first creating the overlay / video changes
     if (!isKeepAliveSameVideo) {
       const payload = await sendMessage(MessageType.ResolveAdFreeStream, { videoId });
       await mergePageCaptions(payload);
     }
 
-    // Remember video before ensureOverlay so keep-alive checks stay consistent
     activeVideoId = videoId;
+    const created = ensureOverlay(videoId, ytSnapshot.currentTime);
+    showOverlayActive();
 
-    const created = ensureOverlay(videoId, elHost, ytSnapshot.currentTime);
-    showOverlay(elHost);
+    // Refresh button ref (lives on root, not host)
+    const elLiveButton = document.getElementById(BUTTON_ID) as HTMLButtonElement | null ?? elButton;
 
-    if (created) {
+    if (created || !isKeepAliveSameVideo) {
       await waitForPlayerReady(videoId);
-      // Fresh load: apply full snapshot (time from YT)
       await pushSnapshotToPlayer({
         ...ytSnapshot,
         wasPlaying: false
       }, true);
     } else {
-      // Keep-alive reuse: never reload iframe.src
+      // Reuse warm iframe: never touch src; avoid seek if times match
       const adFreeSnapshot = await requestPlayerSnapshot(videoId);
       const adFreeTime = adFreeSnapshot?.currentTime ?? ytSnapshot.currentTime;
       const timeDelta = Math.abs(ytSnapshot.currentTime - adFreeTime);
       if (timeDelta > SEEK_EPSILON_SEC) {
-        // User scrubbed / watched further on YT — sync position only
         await pushSnapshotToPlayer({
           ...ytSnapshot,
           wasPlaying: false
         }, true);
       } else {
-        // Same place — pause only, no seek (avoids a visible "refresh")
         postToPlayer({ type: AD_FREE_BRIDGE_TYPE, action: "pause" });
       }
     }
 
     isAdFreeActive = true;
-    setButtonContent(elButton, "YouTube", { isActive: true });
-    elButton.disabled = false;
+    setButtonContent(elLiveButton, "YouTube", { isActive: true });
+    elLiveButton.disabled = false;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     console.error("[ytdl-ad-free]", message);
-    // Keep keep-alive overlay if it existed; park it, do not destroy
     hideOverlayKeepAlive();
     isAdFreeActive = false;
-    setButtonContent(elButton, "Failed — retry", { withDot: false, isActive: false });
+    const elLiveButton = document.getElementById(BUTTON_ID) as HTMLButtonElement | null ?? elButton;
+    setButtonContent(elLiveButton, "Failed — retry", { withDot: false, isActive: false });
     setTimeout(() => {
       if (!isAdFreeActive) {
-        setButtonContent(elButton, "Ad-Free", { isActive: false });
-        elButton.disabled = false;
+        setButtonContent(elLiveButton, "Ad-Free", { isActive: false });
+        elLiveButton.disabled = false;
       }
     }, 2500);
   }
@@ -689,7 +785,6 @@ async function disableAdFree(elButton?: HTMLButtonElement | null) {
     setButtonContent(elButton, "Switching...", { withDot: false, isActive: true });
   }
 
-  // Pull state from ad-free player, force pause there
   let snapshot = videoId ? await requestPlayerSnapshot(videoId) : null;
   postToPlayer({ type: AD_FREE_BRIDGE_TYPE, action: "pause" });
 
@@ -697,11 +792,11 @@ async function disableAdFree(elButton?: HTMLButtonElement | null) {
     snapshot = lastSnapshot;
   }
 
+  // Hide overlay only — do not reparent or destroy iframe
   hideOverlayKeepAlive();
   isAdFreeActive = false;
 
   if (snapshot && videoId && snapshot.videoId === videoId) {
-    // Restore time on YT and stay paused on switch
     applyYouTubeSnapshot({
       ...snapshot,
       wasPlaying: false
@@ -714,9 +809,10 @@ async function disableAdFree(elButton?: HTMLButtonElement | null) {
     pauseYouTubePlayer();
   }
 
-  if (elButton) {
-    setButtonContent(elButton, "Ad-Free", { isActive: false });
-    elButton.disabled = false;
+  const elLiveButton = document.getElementById(BUTTON_ID) as HTMLButtonElement | null ?? elButton;
+  if (elLiveButton) {
+    setButtonContent(elLiveButton, "Ad-Free", { isActive: false });
+    elLiveButton.disabled = false;
   }
 }
 
@@ -726,11 +822,6 @@ function resetForNavigation() {
   lastSnapshot = null;
   isPlayerReady = false;
   destroyOverlay();
-  const elButton = document.getElementById(BUTTON_ID) as HTMLButtonElement | null;
-  if (elButton) {
-    setButtonContent(elButton, "Ad-Free", { isActive: false });
-    elButton.disabled = false;
-  }
 }
 
 async function toggleAdFree(elButton: HTMLButtonElement) {
@@ -741,86 +832,52 @@ async function toggleAdFree(elButton: HTMLButtonElement) {
   await enableAdFree(elButton);
 }
 
-function removeButton() {
-  document.getElementById(BUTTON_ID)?.remove();
-}
-
-function createButton(): HTMLButtonElement {
-  const elButton = document.createElement("button");
-  elButton.id = BUTTON_ID;
-  elButton.type = "button";
-  setButtonContent(elButton, "Ad-Free", { isActive: false });
-
-  const stopPlayerClick = (e: Event) => {
-    e.stopPropagation();
-  };
-
-  elButton.addEventListener("mousedown", stopPlayerClick);
-  elButton.addEventListener("mouseup", stopPlayerClick);
-  elButton.addEventListener("pointerdown", stopPlayerClick);
-  elButton.addEventListener("click", e => {
-    e.preventDefault();
-    e.stopPropagation();
-    void toggleAdFree(elButton);
-  });
-
-  return elButton;
-}
-
-function injectButton(): boolean {
+function ensureUiShell() {
   if (!getVideoId()) {
     resetForNavigation();
-    removeButton();
     return false;
   }
 
-  const elHost = getPlayerHost();
-  if (!elHost) {
+  if (!getPlayerHost()) {
     return false;
   }
 
   ensureStyles();
+  startLayoutTracking();
 
-  const hostStyle = getComputedStyle(elHost);
-  if (hostStyle.position === "static") {
-    elHost.style.position = "relative";
+  // Keep warm root/button even before first Ad-Free open (button must be visible)
+  if (!getRoot()) {
+    const elRoot = document.createElement("div");
+    elRoot.id = ROOT_ID;
+    document.documentElement.append(elRoot);
+    elRoot.append(createButton());
+  } else if (!document.getElementById(BUTTON_ID)) {
+    getRoot()?.append(createButton());
   }
 
-  // If Ad-Free is active, keep overlay on the live host.
-  // If inactive, leave overlay parked (do NOT move it back under movie_player).
-  const elOverlay = document.getElementById(OVERLAY_ID);
-  if (isAdFreeActive) {
-    if (elOverlay) {
-      showOverlay(elHost);
-    }
-  }
+  syncRootLayout();
 
-  const elExisting = document.getElementById(BUTTON_ID) as HTMLButtonElement | null;
-  if (elExisting) {
-    if (elExisting.parentElement !== elHost) {
-      elHost.append(elExisting);
-    }
+  const elButton = document.getElementById(BUTTON_ID) as HTMLButtonElement | null;
+  if (elButton) {
     if (isAdFreeActive && activeVideoId === getVideoId()) {
-      setButtonContent(elExisting, "YouTube", { isActive: true });
+      setButtonContent(elButton, "YouTube", { isActive: true });
+      showOverlayActive();
+    } else if (!isAdFreeActive) {
+      setButtonContent(elButton, "Ad-Free", { isActive: false });
+      hideOverlayKeepAlive();
     }
-    return true;
   }
 
-  const elButton = createButton();
-  if (isAdFreeActive && activeVideoId === getVideoId()) {
-    setButtonContent(elButton, "YouTube", { isActive: true });
-  }
-  elHost.append(elButton);
   return true;
 }
 
 function waitForButtonTarget() {
-  if (injectButton()) {
+  if (ensureUiShell()) {
     return;
   }
 
   const observer = new MutationObserver(() => {
-    if (injectButton()) {
+    if (ensureUiShell()) {
       observer.disconnect();
     }
   });
@@ -835,7 +892,6 @@ function onWatchNavigation() {
   if (!videoId || (activeVideoId && videoId !== activeVideoId)) {
     resetForNavigation();
   }
-  removeButton();
   waitForButtonTarget();
 }
 
