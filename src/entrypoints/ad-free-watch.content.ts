@@ -24,7 +24,6 @@ const HOST_ACTIVE_CLASS = "ytdl-ad-free-active";
 const ROOT_ACTIVE_CLASS = "is-active";
 const OBSERVER_DISCONNECT_MS = 30_000;
 const BRIDGE_TIMEOUT_MS = 4_000;
-const SEEK_EPSILON_SEC = 0.75;
 
 /**
  * IMPORTANT: Never reparent the iframe.
@@ -258,6 +257,37 @@ function setButtonContent(
   elButton.setAttribute("aria-pressed", isActive ? "true" : "false");
 }
 
+/** Parse YouTube t= / start= query (90, 1m30s, 1h2m3s). */
+function parseYoutubeTimeToSeconds(raw: string | null | undefined): number {
+  if (!raw) {
+    return 0;
+  }
+  const trimmed = raw.trim();
+  if (!trimmed) {
+    return 0;
+  }
+  if (/^\d+(\.\d+)?$/.test(trimmed)) {
+    const value = Number(trimmed);
+    return Number.isFinite(value) && value > 0 ? value : 0;
+  }
+  const match = trimmed.match(/^(?:(\d+)h)?(?:(\d+)m)?(?:(\d+(?:\.\d+)?)s)?$/i);
+  if (!match) {
+    return 0;
+  }
+  const total = Number(match[1] ?? 0) * 3600 + Number(match[2] ?? 0) * 60 + Number(match[3] ?? 0);
+  return Number.isFinite(total) && total > 0 ? total : 0;
+}
+
+function readTimeFromLocation(): number {
+  try {
+    const params = new URLSearchParams(location.search);
+    return parseYoutubeTimeToSeconds(params.get("t"))
+      || parseYoutubeTimeToSeconds(params.get("start"));
+  } catch {
+    return 0;
+  }
+}
+
 function captureYouTubeSnapshot(videoId: string): AdFreePlaybackSnapshot {
   const elPlayer = getYtPlayer();
   const elVideo = getYtVideo();
@@ -267,6 +297,11 @@ function captureYouTubeSnapshot(videoId: string): AdFreePlaybackSnapshot {
     currentTime = elPlayer?.getCurrentTime?.() ?? elVideo?.currentTime ?? 0;
   } catch {
     currentTime = elVideo?.currentTime ?? 0;
+  }
+  // Prefer live player time; if still at start, honor URL t=/start=
+  const urlTime = readTimeFromLocation();
+  if ((!Number.isFinite(currentTime) || currentTime < 0.5) && urlTime > 0) {
+    currentTime = urlTime;
   }
 
   let wasPlaying = false;
@@ -738,24 +773,13 @@ async function enableAdFree(elButton: HTMLButtonElement) {
 
     if (created || !isKeepAliveSameVideo) {
       await waitForPlayerReady(videoId);
-      await pushSnapshotToPlayer({
-        ...ytSnapshot,
-        wasPlaying: false
-      }, true);
-    } else {
-      // Reuse warm iframe: never touch src; avoid seek if times match
-      const adFreeSnapshot = await requestPlayerSnapshot(videoId);
-      const adFreeTime = adFreeSnapshot?.currentTime ?? ytSnapshot.currentTime;
-      const timeDelta = Math.abs(ytSnapshot.currentTime - adFreeTime);
-      if (timeDelta > SEEK_EPSILON_SEC) {
-        await pushSnapshotToPlayer({
-          ...ytSnapshot,
-          wasPlaying: false
-        }, true);
-      } else {
-        postToPlayer({ type: AD_FREE_BRIDGE_TYPE, action: "pause" });
-      }
     }
+    // Always align Ad-Free to the original player's time (or URL t=), then pause.
+    // Warm iframe is reused (no reload); only currentTime is updated.
+    await pushSnapshotToPlayer({
+      ...ytSnapshot,
+      wasPlaying: false
+    }, true);
 
     isAdFreeActive = true;
     setButtonContent(elLiveButton, "YouTube", { isActive: true });

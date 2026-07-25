@@ -1,9 +1,9 @@
 import {
   type ChannelVideoItem,
+  channelListTabFromPath,
   collectVisibleVideoIdsFromDocument,
-  extractChannelIdFromText,
-  extractChannelIdFromUrl,
-  isChannelVideosPath
+  extractChannelIdFromDocument,
+  isChannelListPath
 } from "@/lib/ad-free/channel-region-list";
 import { MessageType, sendMessage } from "@/lib/messaging/messaging";
 
@@ -192,8 +192,7 @@ function ensureStyles() {
 }
 
 function resolveChannelId(): string | null {
-  return extractChannelIdFromUrl(location.href)
-    ?? extractChannelIdFromText(document.documentElement.innerHTML.slice(0, 500_000));
+  return extractChannelIdFromDocument(document);
 }
 
 function removeUi() {
@@ -242,7 +241,7 @@ function ensurePanel(): HTMLElement {
     <div class="hdr">
       <div>
         <h2>Hidden in your region</h2>
-        <p class="subline">Listed via gl=${DEFAULT_GL} uploads playlist (MVP)</p>
+        <p class="subline">Listed via gl=${DEFAULT_GL} (videos / streams)</p>
       </div>
       <button type="button" class="close" aria-label="Close">×</button>
     </div>
@@ -343,19 +342,26 @@ async function scanHiddenVideos(): Promise<{
   totalRemote: number;
   visibleCount: number;
   channelId: string;
+  tab: string;
 }> {
   const channelId = resolveChannelId();
   if (!channelId) {
-    throw new Error("Could not detect channel id on this page");
+    throw new Error(
+      "Could not detect channel id on this page. Open the channel Videos or Streams tab and try again."
+    );
   }
 
-  // Wait a tick so lazy grid can paint some cards
-  await new Promise(resolve => setTimeout(resolve, 300));
+  const tab = channelListTabFromPath(location.pathname);
+
+  // Wait so lazy grid can paint; scroll slightly to encourage hydration
+  window.scrollBy(0, 1);
+  await new Promise(resolve => setTimeout(resolve, 400));
   const visibleIds = collectVisibleVideoIdsFromDocument();
 
   const remote = await sendMessage(MessageType.ResolveChannelRegionList, {
     channelId,
-    gl: DEFAULT_GL
+    gl: DEFAULT_GL,
+    tab
   });
 
   const hidden = remote.videos.filter(video => !visibleIds.has(video.videoId));
@@ -364,7 +370,8 @@ async function scanHiddenVideos(): Promise<{
     gl: remote.gl,
     totalRemote: remote.videos.length,
     visibleCount: visibleIds.size,
-    channelId
+    channelId,
+    tab
   };
 }
 
@@ -385,6 +392,10 @@ async function onToggleClick(elButton: HTMLButtonElement) {
     const result = await scanHiddenVideos();
     lastHidden = result.hidden;
     lastGl = result.gl;
+    const elSub = elPanel.querySelector(".subline");
+    if (elSub) {
+      elSub.textContent = `Tab: ${result.tab} · gl=${result.gl} · remote ${result.totalRemote} · on page ${result.visibleCount}`;
+    }
     renderPanelBody(elPanel, {
       hidden: result.hidden,
       gl: result.gl,
@@ -410,7 +421,7 @@ function onLocationMaybeChanged() {
   }
   lastPath = path;
 
-  if (!isChannelVideosPath(location.pathname)) {
+  if (!isChannelListPath(location.pathname)) {
     removeUi();
     return;
   }

@@ -45,7 +45,18 @@ function channelIdToUploadsPlaylistId(channelId: string): string {
 }
 
 export function extractChannelIdFromText(text: string): string | null {
-  for (const pattern of [CHANNEL_ID_PATTERN, EXTERNAL_ID_PATTERN, BROWSE_ID_PATTERN]) {
+  // Prefer structured metadata over a random first "channelId" in the page blob
+  const preferredPatterns = [
+    /"channelMetadataRenderer"\s*:\s*\{[\s\S]*?"externalId"\s*:\s*"(UC[\w-]{22})"/,
+    /"channelMetadataRenderer"\s*:\s*\{[\s\S]*?"channelId"\s*:\s*"(UC[\w-]{22})"/,
+    /"externalId"\s*:\s*"(UC[\w-]{22})"/,
+    /"ownerChannelId"\s*:\s*"(UC[\w-]{22})"/,
+    /"browseId"\s*:\s*"(UC[\w-]{22})"/,
+    CHANNEL_ID_PATTERN,
+    EXTERNAL_ID_PATTERN,
+    BROWSE_ID_PATTERN
+  ];
+  for (const pattern of preferredPatterns) {
     const match = text.match(pattern);
     if (match?.[1]) {
       return match[1];
@@ -67,17 +78,91 @@ export function extractChannelIdFromUrl(urlString: string): string | null {
   return null;
 }
 
-export function isChannelVideosPath(pathname: string): boolean {
-  // /@handle/videos, /channel/UC…/videos, /c/name/videos, /user/name/videos
-  if (/\/videos\/?$/.test(pathname)) {
-    return /\/(@|channel\/|c\/|user\/)/.test(pathname);
+/** Best-effort channel id from the live channel page DOM / scripts. */
+export function extractChannelIdFromDocument(doc: Document = document): string | null {
+  const fromUrl = extractChannelIdFromUrl(doc.location?.href ?? location.href);
+  if (fromUrl) {
+    return fromUrl;
   }
-  // Some layouts use /videos?view=0&sort=dd…
-  if (pathname.includes("/videos")) {
-    return /\/(@|channel\/|c\/|user\/)/.test(pathname);
+
+  const metaChannel = doc.querySelector('meta[itemprop="channelId"]')?.getAttribute("content");
+  if (metaChannel && /^UC[\w-]{22}$/.test(metaChannel)) {
+    return metaChannel;
   }
-  return false;
+
+  for (const selector of ['link[rel="canonical"]', 'meta[property="og:url"]', 'link[itemprop="url"]']) {
+    const el = doc.querySelector(selector);
+    const href = el?.getAttribute("href") || el?.getAttribute("content") || "";
+    const id = extractChannelIdFromUrl(href);
+    if (id) {
+      return id;
+    }
+  }
+
+  // Visible links to /channel/UC…
+  for (const elAnchor of doc.querySelectorAll<HTMLAnchorElement>('a[href*="/channel/UC"]')) {
+    const id = extractChannelIdFromUrl(elAnchor.href || elAnchor.getAttribute("href") || "");
+    if (id) {
+      return id;
+    }
+  }
+
+  // ytInitialData / embedded config in scripts (prefer channel metadata blocks)
+  for (const elScript of doc.querySelectorAll("script")) {
+    const text = elScript.textContent;
+    if (!text || text.length < 50) {
+      continue;
+    }
+    if (
+      !text.includes("channelMetadataRenderer")
+      && !text.includes("externalId")
+      && !text.includes("browseId")
+      && !text.includes("channelId")
+    ) {
+      continue;
+    }
+    const id = extractChannelIdFromText(text);
+    if (id) {
+      return id;
+    }
+  }
+
+  // Last resort: large HTML slice (may include related-channel noise)
+  return extractChannelIdFromText(doc.documentElement?.innerHTML?.slice(0, 1_500_000) ?? "");
 }
+
+export type ChannelListTab = "videos" | "streams";
+
+export function isChannelVideosPath(pathname: string): boolean {
+  if (!/\/(@|channel\/|c\/|user\/)/.test(pathname)) {
+    return false;
+  }
+  return /\/videos(\/|$)/.test(pathname);
+}
+
+export function isChannelStreamsPath(pathname: string): boolean {
+  if (!/\/(@|channel\/|c\/|user\/)/.test(pathname)) {
+    return false;
+  }
+  // Live tab: /streams (current) and legacy /live
+  return /\/(streams|live)(\/|$)/.test(pathname);
+}
+
+export function isChannelListPath(pathname: string): boolean {
+  return isChannelVideosPath(pathname) || isChannelStreamsPath(pathname);
+}
+
+export function channelListTabFromPath(pathname: string): ChannelListTab {
+  return isChannelStreamsPath(pathname) ? "streams" : "videos";
+}
+
+/** Innertube browse params for channel tabs (base64url). */
+const CHANNEL_TAB_PARAMS: Record<ChannelListTab, string> = {
+  // "videos"
+  videos: "EgZ2aWRlb3PyBgQKAjoA",
+  // "streams" / live
+  streams: "EgdzdHJlYW1z8gYECgJ6AA%3D%3D"
+};
 
 function extractInnertubeMeta(html: string, gl: string, hl: string): BrowseClient {
   const [, clientVersion = DEFAULT_CLIENT_VERSION] = html.match(CLIENT_VERSION_PATTERN) ?? [];
@@ -309,10 +394,12 @@ async function browseInnertube({
 function buildBrowseBody({
   browseId,
   continuation,
+  params,
   client
 }: {
   browseId?: string;
   continuation?: string;
+  params?: string;
   client: BrowseClient;
 }) {
   return {
@@ -326,52 +413,24 @@ function buildBrowseBody({
       }
     },
     ...(browseId ? { browseId } : {}),
+    ...(params ? { params } : {}),
     ...(continuation ? { continuation } : {})
   };
 }
 
-export async function fetchChannelVideosWithGl({
-  channelId,
-  gl = DEFAULT_GL,
-  hl = DEFAULT_HL,
-  customFetch
+async function collectBrowsePages({
+  initialBody,
+  client,
+  customFetch,
+  videos
 }: {
-  channelId: string;
-  gl?: string;
-  hl?: string;
+  initialBody: Record<string, unknown>;
+  client: BrowseClient;
   customFetch?: FetchFn;
-}): Promise<ChannelRegionListResult> {
-  const uploadsPlaylistId = channelIdToUploadsPlaylistId(channelId);
-  const performFetch = customFetch ?? fetch;
-
-  // Bootstrap: playlist HTML gives visitorData + first page (region still IP-biased on HTML,
-  // but we re-fetch via browse with explicit gl for continuations and primary list).
-  const playlistResponse = await performFetch(
-    `${PLAYLIST_URL_PREFIX}${encodeURIComponent(uploadsPlaylistId)}`,
-    { credentials: "include" }
-  );
-  if (!playlistResponse.ok) {
-    throw new Error(`Playlist page HTTP ${playlistResponse.status}`);
-  }
-  const html = await playlistResponse.text();
-  const client = extractInnertubeMeta(html, gl, hl);
-
-  const videos = new Map<string, ChannelVideoItem>();
-
-  // Seed from playlist HTML if present
-  const initialMatch = html.match(INITIAL_DATA_PATTERN);
-  if (initialMatch?.[1]) {
-    try {
-      collectVideosFromUnknown(JSON.parse(initialMatch[1]), videos);
-    } catch {
-      // ignore parse errors
-    }
-  }
-
-  // Primary listing via browse VL + uploads playlist with forced gl
-  const browseId = `VL${uploadsPlaylistId}`;
+  videos: Map<string, ChannelVideoItem>;
+}) {
   let json = await browseInnertube({
-    body: buildBrowseBody({ browseId, client }),
+    body: initialBody,
     visitorData: client.visitorData,
     customFetch
   });
@@ -389,9 +448,89 @@ export async function fetchChannelVideosWithGl({
     const before = videos.size;
     collectVideosFromUnknown(json, videos);
     continuation = extractContinuationToken(json);
-    // Stop if a page adds nothing and no new token logic needed
     if (videos.size === before && !continuation) {
       break;
+    }
+  }
+}
+
+export async function fetchChannelVideosWithGl({
+  channelId,
+  gl = DEFAULT_GL,
+  hl = DEFAULT_HL,
+  tab = "videos",
+  customFetch
+}: {
+  channelId: string;
+  gl?: string;
+  hl?: string;
+  tab?: ChannelListTab;
+  customFetch?: FetchFn;
+}): Promise<ChannelRegionListResult> {
+  const uploadsPlaylistId = channelIdToUploadsPlaylistId(channelId);
+  const performFetch = customFetch ?? fetch;
+
+  // Bootstrap: channel or playlist HTML for clientVersion + visitorData
+  const bootstrapUrl = tab === "streams"
+    ? `https://www.youtube.com/channel/${encodeURIComponent(channelId)}/streams`
+    : `${PLAYLIST_URL_PREFIX}${encodeURIComponent(uploadsPlaylistId)}`;
+
+  const bootstrapResponse = await performFetch(bootstrapUrl, { credentials: "include" });
+  if (!bootstrapResponse.ok) {
+    throw new Error(`Channel bootstrap HTTP ${bootstrapResponse.status}`);
+  }
+  const html = await bootstrapResponse.text();
+  const client = extractInnertubeMeta(html, gl, hl);
+
+  const videos = new Map<string, ChannelVideoItem>();
+
+  const initialMatch = html.match(INITIAL_DATA_PATTERN);
+  if (initialMatch?.[1]) {
+    try {
+      collectVideosFromUnknown(JSON.parse(initialMatch[1]), videos);
+    } catch {
+      // ignore parse errors
+    }
+  }
+
+  if (tab === "streams") {
+    // Channel Live/Streams tab with forced gl
+    await collectBrowsePages({
+      initialBody: buildBrowseBody({
+        browseId: channelId,
+        params: CHANNEL_TAB_PARAMS.streams,
+        client
+      }),
+      client,
+      customFetch,
+      videos
+    });
+  } else {
+    // Uploads playlist (includes most VODs / past lives that landed in uploads)
+    await collectBrowsePages({
+      initialBody: buildBrowseBody({
+        browseId: `VL${uploadsPlaylistId}`,
+        client
+      }),
+      client,
+      customFetch,
+      videos
+    });
+
+    // Also pull the Videos tab browse (sometimes differs from UU playlist ordering/set)
+    try {
+      await collectBrowsePages({
+        initialBody: buildBrowseBody({
+          browseId: channelId,
+          params: CHANNEL_TAB_PARAMS.videos,
+          client
+        }),
+        client,
+        customFetch,
+        videos
+      });
+    } catch {
+      // non-fatal
     }
   }
 

@@ -95,6 +95,7 @@ export function registerAdFreeHandlers() {
   onMessage(MessageType.ResolveChannelRegionList, async ({ data, sender }) => {
     const youtubeTabId = await findYouTubeTabId(sender.tab?.id);
     const gl = data.gl ?? "US";
+    const tab = data.tab ?? "videos";
     const errors: string[] = [];
 
     if (youtubeTabId != null) {
@@ -103,6 +104,7 @@ export function registerAdFreeHandlers() {
         return await fetchChannelVideosWithGl({
           channelId: data.channelId,
           gl,
+          tab,
           customFetch: pageProxyFetch
         });
       } catch (error) {
@@ -115,7 +117,8 @@ export function registerAdFreeHandlers() {
     try {
       return await fetchChannelVideosWithGl({
         channelId: data.channelId,
-        gl
+        gl,
+        tab
       });
     } catch (error) {
       errors.push(`background: ${error instanceof Error ? error.message : String(error)}`);

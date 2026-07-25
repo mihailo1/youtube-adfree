@@ -168,14 +168,27 @@ function createCompanionAudio(
     return elAudio;
   };
 
-  const syncTime = () => {
+  // Dual-element A/V sync: only correct large drift, never on every timeupdate
+  // (constant currentTime assignment causes audible/visual micro-loops on long VODs).
+  const DRIFT_SEC = 0.75;
+  const MIN_CORRECT_INTERVAL_MS = 2500;
+  let lastCorrectAt = 0;
+
+  const syncTime = (force = false) => {
     if (!elAudio || !activeAudioUrl) {
       return;
     }
     const playerTime = Number(elPlayer.currentTime ?? 0);
-    if (Math.abs(elAudio.currentTime - playerTime) > 0.3) {
-      elAudio.currentTime = playerTime;
+    const drift = Math.abs(elAudio.currentTime - playerTime);
+    if (!force && drift < DRIFT_SEC) {
+      return;
     }
+    const now = Date.now();
+    if (!force && now - lastCorrectAt < MIN_CORRECT_INTERVAL_MS) {
+      return;
+    }
+    elAudio.currentTime = playerTime;
+    lastCorrectAt = now;
   };
 
   const syncVolume = () => {
@@ -190,7 +203,7 @@ function createCompanionAudio(
     if (!elAudio || !activeAudioUrl) {
       return;
     }
-    syncTime();
+    syncTime(true);
     syncVolume();
     elAudio.playbackRate = Number(elPlayer.playbackRate ?? 1);
     void elAudio.play().catch(() => {});
@@ -203,9 +216,9 @@ function createCompanionAudio(
   elPlayer.addEventListener("play", onPlay);
   elPlayer.addEventListener("playing", onPlay);
   elPlayer.addEventListener("pause", onPause);
-  elPlayer.addEventListener("seeking", syncTime);
-  elPlayer.addEventListener("seeked", syncTime);
-  elPlayer.addEventListener("time-update", syncTime);
+  elPlayer.addEventListener("seeking", () => syncTime(true));
+  elPlayer.addEventListener("seeked", () => syncTime(true));
+  // No continuous time-update seeking — that was the stutter source
   elPlayer.addEventListener("volume-change", syncVolume);
   elPlayer.addEventListener("rate-change", () => {
     if (elAudio) {
@@ -269,13 +282,34 @@ function findQualityForPlayer(
   return qualities[0] ?? null;
 }
 
-function readInitialTime(params: URLSearchParams): number {
-  const raw = params.get("t");
+/** Parse YouTube-style time: "90", "90.5", "1h2m3s", "2m", "45s". */
+export function parseYoutubeTimeToSeconds(raw: string | null | undefined): number {
   if (!raw) {
     return 0;
   }
-  const value = Number(raw);
-  return Number.isFinite(value) && value > 0 ? value : 0;
+  const trimmed = raw.trim();
+  if (!trimmed) {
+    return 0;
+  }
+  if (/^\d+(\.\d+)?$/.test(trimmed)) {
+    const value = Number(trimmed);
+    return Number.isFinite(value) && value > 0 ? value : 0;
+  }
+  const match = trimmed.match(/^(?:(\d+)h)?(?:(\d+)m)?(?:(\d+(?:\.\d+)?)s)?$/i);
+  if (!match) {
+    return 0;
+  }
+  const hours = Number(match[1] ?? 0);
+  const minutes = Number(match[2] ?? 0);
+  const seconds = Number(match[3] ?? 0);
+  const total = hours * 3600 + minutes * 60 + seconds;
+  return Number.isFinite(total) && total > 0 ? total : 0;
+}
+
+function readInitialTime(params: URLSearchParams): number {
+  // Prefer explicit player t=, then YouTube-style start=
+  return parseYoutubeTimeToSeconds(params.get("t"))
+    || parseYoutubeTimeToSeconds(params.get("start"));
 }
 
 function capturePlayerSnapshot(elPlayer: MediaPlayerEl, videoId: string): AdFreePlaybackSnapshot {
@@ -297,7 +331,18 @@ function applyPlayerSnapshot(
   keepPlaying?: KeepPlayingController | null
 ) {
   const time = Math.max(0, snapshot.currentTime);
-  elPlayer.currentTime = time;
+
+  const applyTime = () => {
+    elPlayer.currentTime = time;
+    companionAudio.syncFromPlayer();
+  };
+
+  applyTime();
+  // Media elements often ignore the first seek until the stream is ready
+  window.requestAnimationFrame(applyTime);
+  window.setTimeout(applyTime, 50);
+  window.setTimeout(applyTime, 250);
+
   elPlayer.playbackRate = snapshot.playbackRate > 0 ? snapshot.playbackRate : 1;
   elPlayer.volume = Math.min(1, Math.max(0, snapshot.volume));
   elPlayer.muted = snapshot.muted;

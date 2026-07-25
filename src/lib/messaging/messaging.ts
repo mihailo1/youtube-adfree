@@ -1,4 +1,7 @@
-import type { ChannelRegionListResult } from "@/lib/ad-free/channel-region-list";
+import type {
+  ChannelListTab,
+  ChannelRegionListResult
+} from "@/lib/ad-free/channel-region-list";
 import type { AdFreeStreamPayload } from "@/lib/ad-free/resolve-stream";
 import type {
   DownloadRequest,
@@ -300,6 +303,7 @@ export interface ProtocolMap {
   resolveChannelRegionList(data: {
     channelId: string;
     gl?: string;
+    tab?: ChannelListTab;
   }): ChannelRegionListResult;
 }
 
