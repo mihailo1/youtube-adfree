@@ -147,14 +147,28 @@ function appendCaptionTracks(
 type CompanionAudioController = {
   setQuality: (quality: AdFreeQualityOption | null) => void;
   syncFromPlayer: () => void;
+  /** Hold audio until video is actually playing (seek / quality change). */
+  suspend: () => void;
+  /** Align + start audio only when video is in a playable state. */
+  releaseWhenPlaying: () => void;
 };
 
+/**
+ * Separate audio element for adaptive (video-only + audio-only) streams.
+ *
+ * Audio CDN chunks arrive faster than video, so starting audio on "play"/"seeked"
+ * makes a short burst that then jumps when we re-sync to the video clock.
+ * Gate: audio stays paused+muted until the video fires a real "playing" event
+ * after seek/buffer/quality changes.
+ */
 function createCompanionAudio(
   elPlayer: MediaPlayerEl,
   elMount: HTMLElement
 ): CompanionAudioController {
   let elAudio: HTMLAudioElement | null = null;
   let activeAudioUrl: string | null = null;
+  /** When true, audio must not output sound even if the player is "playing". */
+  let isSuspended = false;
 
   const ensureAudio = () => {
     if (elAudio) {
@@ -168,69 +182,99 @@ function createCompanionAudio(
     return elAudio;
   };
 
-  // Dual-element A/V sync: only correct large drift, never on every timeupdate
-  // (constant currentTime assignment causes audible/visual micro-loops on long VODs).
-  const DRIFT_SEC = 0.75;
-  const MIN_CORRECT_INTERVAL_MS = 2500;
-  let lastCorrectAt = 0;
+  const silentStop = () => {
+    if (!elAudio) {
+      return;
+    }
+    elAudio.pause();
+    // Keep muted while suspended so a late play() cannot blip
+    elAudio.muted = true;
+  };
 
-  const syncTime = (force = false) => {
+  const suspend = () => {
+    isSuspended = true;
+    silentStop();
+  };
+
+  const alignClock = () => {
     if (!elAudio || !activeAudioUrl) {
       return;
     }
     const playerTime = Number(elPlayer.currentTime ?? 0);
-    const drift = Math.abs(elAudio.currentTime - playerTime);
-    if (!force && drift < DRIFT_SEC) {
-      return;
+    if (Number.isFinite(playerTime)) {
+      try {
+        elAudio.currentTime = playerTime;
+      } catch {
+        // ignore seek before audio metadata
+      }
     }
-    const now = Date.now();
-    if (!force && now - lastCorrectAt < MIN_CORRECT_INTERVAL_MS) {
-      return;
-    }
-    elAudio.currentTime = playerTime;
-    lastCorrectAt = now;
+    elAudio.playbackRate = Number(elPlayer.playbackRate ?? 1) || 1;
   };
 
-  const syncVolume = () => {
-    if (!elAudio) {
+  const applyUserVolume = () => {
+    if (!elAudio || isSuspended) {
       return;
     }
     elAudio.volume = Number(elPlayer.volume ?? 1);
     elAudio.muted = Boolean(elPlayer.muted);
   };
 
-  const onPlay = () => {
+  const releaseWhenPlaying = () => {
     if (!elAudio || !activeAudioUrl) {
       return;
     }
-    syncTime(true);
-    syncVolume();
-    elAudio.playbackRate = Number(elPlayer.playbackRate ?? 1);
+    if (elPlayer.paused) {
+      isSuspended = false;
+      silentStop();
+      elAudio.muted = Boolean(elPlayer.muted);
+      return;
+    }
+    // Only unlock when the video element is actually rendering frames
+    isSuspended = false;
+    alignClock();
+    applyUserVolume();
     void elAudio.play().catch(() => {});
   };
 
-  const onPause = () => {
-    elAudio?.pause();
-  };
-
-  elPlayer.addEventListener("play", onPlay);
-  elPlayer.addEventListener("playing", onPlay);
-  elPlayer.addEventListener("pause", onPause);
-  elPlayer.addEventListener("seeking", () => syncTime(true));
-  elPlayer.addEventListener("seeked", () => syncTime(true));
-  // No continuous time-update seeking — that was the stutter source
-  elPlayer.addEventListener("volume-change", syncVolume);
-  elPlayer.addEventListener("rate-change", () => {
-    if (elAudio) {
-      elAudio.playbackRate = Number(elPlayer.playbackRate ?? 1);
-    }
+  elPlayer.addEventListener("waiting", suspend);
+  elPlayer.addEventListener("stalled", suspend);
+  elPlayer.addEventListener("seeking", suspend);
+  elPlayer.addEventListener("emptied", suspend);
+  elPlayer.addEventListener("loadstart", suspend);
+  elPlayer.addEventListener("pause", () => {
+    silentStop();
   });
   elPlayer.addEventListener("ended", () => {
-    elAudio?.pause();
+    isSuspended = false;
+    silentStop();
+  });
+  // Do NOT start audio on "play" — that fires while still buffering after seek.
+  elPlayer.addEventListener("playing", () => {
+    releaseWhenPlaying();
+  });
+  elPlayer.addEventListener("seeked", () => {
+    // Stay suspended; prepare clock but no sound until "playing"
+    if (elAudio && activeAudioUrl) {
+      alignClock();
+      silentStop();
+    }
+  });
+  elPlayer.addEventListener("volume-change", () => {
+    applyUserVolume();
+  });
+  elPlayer.addEventListener("rate-change", () => {
+    if (elAudio) {
+      elAudio.playbackRate = Number(elPlayer.playbackRate ?? 1) || 1;
+    }
   });
 
   return {
+    suspend,
+    releaseWhenPlaying,
     setQuality(quality) {
+      // Quality switch always loads a new video stream first — hold audio
+      suspend();
+
       if (!quality || quality.isProgressive || !quality.audioUrl) {
         activeAudioUrl = null;
         if (elAudio) {
@@ -242,24 +286,25 @@ function createCompanionAudio(
       }
 
       const audio = ensureAudio();
-      const resumeAt = Number(elPlayer.currentTime ?? 0);
       if (activeAudioUrl !== quality.audioUrl) {
         activeAudioUrl = quality.audioUrl;
         audio.src = quality.audioUrl;
       }
-      audio.currentTime = resumeAt;
-      if (!elPlayer.paused) {
-        onPlay();
-      }
+      alignClock();
+      silentStop();
+      // Wait for video "playing" after the new source settles
     },
     syncFromPlayer() {
-      syncTime();
-      syncVolume();
-      if (!elPlayer.paused) {
-        onPlay();
-      } else {
-        onPause();
+      if (elPlayer.paused) {
+        isSuspended = false;
+        silentStop();
+        if (elAudio) {
+          elAudio.muted = Boolean(elPlayer.muted);
+        }
+        return;
       }
+      // If already playing frames, unlock; otherwise keep suspended
+      releaseWhenPlaying();
     }
   };
 }
@@ -444,6 +489,8 @@ function renderPlayer(
 
   const companionAudio = createCompanionAudio(elPlayer, elPlayerWrap);
 
+  // Hold companion audio until the first real "playing" after sources attach
+  companionAudio.suspend();
   elPlayer.src = qualitySources.length === 1 ? qualitySources[0] : qualitySources;
   companionAudio.setQuality(preferred);
 
@@ -575,8 +622,8 @@ function renderPlayer(
     if (!quality) {
       return;
     }
+    // setQuality suspends audio until the next video "playing" event
     companionAudio.setQuality(quality);
-    companionAudio.syncFromPlayer();
     persistSelected(quality);
   };
 
