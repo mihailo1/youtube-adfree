@@ -19,10 +19,13 @@ const BUTTON_ID = "ytdl-ad-free-btn";
 const STYLE_ID = "ytdl-ad-free-btn-style";
 const OVERLAY_ID = "ytdl-ad-free-overlay";
 const IFRAME_ID = "ytdl-ad-free-iframe";
+const PARK_ID = "ytdl-ad-free-park";
 const HOST_ACTIVE_CLASS = "ytdl-ad-free-active";
 const HOST_HIDDEN_CLASS = "ytdl-ad-free-hidden";
 const OBSERVER_DISCONNECT_MS = 30_000;
 const BRIDGE_TIMEOUT_MS = 4_000;
+/** Skip seek when times are close — avoids a visual "reload" on quick toggles. */
+const SEEK_EPSILON_SEC = 0.75;
 
 const BUTTON_CSS = `
 #${BUTTON_ID} {
@@ -95,6 +98,24 @@ const BUTTON_CSS = `
 }
 #${OVERLAY_ID}.${HOST_HIDDEN_CLASS} {
   display: none !important;
+}
+/* Keep-alive parking lot: outside #movie_player so YT re-renders cannot destroy the iframe */
+#${PARK_ID} {
+  position: fixed !important;
+  left: -99999px !important;
+  top: 0 !important;
+  width: 2px !important;
+  height: 2px !important;
+  overflow: hidden !important;
+  opacity: 0 !important;
+  pointer-events: none !important;
+  z-index: -1 !important;
+}
+#${PARK_ID} #${OVERLAY_ID} {
+  position: static !important;
+  inset: auto !important;
+  width: 2px !important;
+  height: 2px !important;
 }
 #${IFRAME_ID} {
   width: 100%;
@@ -461,9 +482,25 @@ async function pushSnapshotToPlayer(
   }
 }
 
+function getPark(): HTMLElement {
+  let elPark = document.getElementById(PARK_ID);
+  if (!elPark) {
+    elPark = document.createElement("div");
+    elPark.id = PARK_ID;
+    elPark.setAttribute("aria-hidden", "true");
+    // Prefer html over body — body can be rebuilt less often than movie_player, html even less
+    (document.documentElement ?? document.body).append(elPark);
+  }
+  return elPark;
+}
+
 function hideOverlayKeepAlive() {
   const elOverlay = document.getElementById(OVERLAY_ID);
-  elOverlay?.classList.add(HOST_HIDDEN_CLASS);
+  if (elOverlay) {
+    elOverlay.classList.add(HOST_HIDDEN_CLASS);
+    // Move out of #movie_player so YouTube SPA/player re-renders cannot drop the iframe
+    getPark().append(elOverlay);
+  }
   document.querySelectorAll(`.${HOST_ACTIVE_CLASS}`).forEach(el => {
     el.classList.remove(HOST_ACTIVE_CLASS);
   });
@@ -475,45 +512,48 @@ function showOverlay(elHost: HTMLElement) {
     return;
   }
   elOverlay.classList.remove(HOST_HIDDEN_CLASS);
-  if (elOverlay.parentElement !== elHost) {
-    elHost.append(elOverlay);
-  }
+  // Always re-attach to the live player host (may be a new node after YT re-render)
+  elHost.append(elOverlay);
   elHost.classList.add(HOST_ACTIVE_CLASS);
 }
 
 function destroyOverlay() {
   document.getElementById(OVERLAY_ID)?.remove();
+  document.getElementById(PARK_ID)?.remove();
   document.querySelectorAll(`.${HOST_ACTIVE_CLASS}`).forEach(el => {
     el.classList.remove(HOST_ACTIVE_CLASS);
   });
   isPlayerReady = false;
 }
 
-function ensureOverlay(videoId: string, elHost: HTMLElement, startAt = 0) {
-  let elOverlay = document.getElementById(OVERLAY_ID);
-  let elIframe = getIframe();
+/**
+ * Returns true only when a brand-new iframe was created (full load).
+ * Same videoId reuses the parked keep-alive iframe — no reload.
+ */
+function ensureOverlay(videoId: string, elHost: HTMLElement, startAt = 0): boolean {
+  const elExistingOverlay = document.getElementById(OVERLAY_ID);
+  const elExistingIframe = getIframe();
 
-  if (elOverlay && elIframe) {
-    // Same video: just re-show keep-alive iframe
-    if (activeVideoId === videoId || elIframe.dataset.videoId === videoId) {
-      showOverlay(elHost);
-      return false;
-    }
-    // Different video: rebuild
-    destroyOverlay();
-    elOverlay = null;
-    elIframe = null;
+  if (elExistingOverlay && elExistingIframe?.dataset.videoId === videoId) {
+    // Keep-alive hit: never touch iframe.src
+    showOverlay(elHost);
+    return false;
   }
 
-  elOverlay = document.createElement("div");
+  if (elExistingOverlay || elExistingIframe) {
+    // Different video (or broken pair): tear down and recreate
+    destroyOverlay();
+  }
+
+  const elOverlay = document.createElement("div");
   elOverlay.id = OVERLAY_ID;
 
-  elIframe = document.createElement("iframe");
+  const elIframe = document.createElement("iframe");
   elIframe.id = IFRAME_ID;
   elIframe.dataset.videoId = videoId;
   elIframe.allow = "autoplay; fullscreen; picture-in-picture";
   elIframe.allowFullscreen = true;
-  // Start paused at transferred time; user / sync controls play.
+  // Only set src on first create for this videoId
   elIframe.src = browser.runtime.getURL(
     `/${AD_FREE_PLAYER_PATH}?v=${encodeURIComponent(videoId)}&embed=1&t=${encodeURIComponent(String(startAt))}&paused=1` as `/ad-free-player.html${string}`
   );
@@ -582,34 +622,52 @@ async function enableAdFree(elButton: HTMLButtonElement) {
 
     await persistVisitorData();
 
+    const existingIframe = getIframe();
+    const isKeepAliveSameVideo = existingIframe?.dataset.videoId === videoId;
+
     // Resolve streams only when first creating the overlay / video changes
-    const needsResolve = !getIframe() || getIframe()?.dataset.videoId !== videoId;
-    if (needsResolve) {
+    if (!isKeepAliveSameVideo) {
       const payload = await sendMessage(MessageType.ResolveAdFreeStream, { videoId });
       await mergePageCaptions(payload);
     }
+
+    // Remember video before ensureOverlay so keep-alive checks stay consistent
+    activeVideoId = videoId;
 
     const created = ensureOverlay(videoId, elHost, ytSnapshot.currentTime);
     showOverlay(elHost);
 
     if (created) {
       await waitForPlayerReady(videoId);
+      // Fresh load: apply full snapshot (time from YT)
+      await pushSnapshotToPlayer({
+        ...ytSnapshot,
+        wasPlaying: false
+      }, true);
+    } else {
+      // Keep-alive reuse: never reload iframe.src
+      const adFreeSnapshot = await requestPlayerSnapshot(videoId);
+      const adFreeTime = adFreeSnapshot?.currentTime ?? ytSnapshot.currentTime;
+      const timeDelta = Math.abs(ytSnapshot.currentTime - adFreeTime);
+      if (timeDelta > SEEK_EPSILON_SEC) {
+        // User scrubbed / watched further on YT — sync position only
+        await pushSnapshotToPlayer({
+          ...ytSnapshot,
+          wasPlaying: false
+        }, true);
+      } else {
+        // Same place — pause only, no seek (avoids a visible "refresh")
+        postToPlayer({ type: AD_FREE_BRIDGE_TYPE, action: "pause" });
+      }
     }
 
-    // Apply YT time to ad-free and force pause (switch = pause)
-    await pushSnapshotToPlayer({
-      ...ytSnapshot,
-      wasPlaying: false
-    }, true);
-
     isAdFreeActive = true;
-    activeVideoId = videoId;
     setButtonContent(elButton, "YouTube", { isActive: true });
     elButton.disabled = false;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     console.error("[ytdl-ad-free]", message);
-    // Keep keep-alive overlay if it existed; just hide
+    // Keep keep-alive overlay if it existed; park it, do not destroy
     hideOverlayKeepAlive();
     isAdFreeActive = false;
     setButtonContent(elButton, "Failed — retry", { withDot: false, isActive: false });
@@ -728,14 +786,13 @@ function injectButton(): boolean {
     elHost.style.position = "relative";
   }
 
-  // Keep overlay attached to current host
+  // If Ad-Free is active, keep overlay on the live host.
+  // If inactive, leave overlay parked (do NOT move it back under movie_player).
   const elOverlay = document.getElementById(OVERLAY_ID);
-  if (elOverlay && elOverlay.parentElement !== elHost) {
-    elHost.append(elOverlay);
-  }
   if (isAdFreeActive) {
-    elHost.classList.add(HOST_ACTIVE_CLASS);
-    elOverlay?.classList.remove(HOST_HIDDEN_CLASS);
+    if (elOverlay) {
+      showOverlay(elHost);
+    }
   }
 
   const elExisting = document.getElementById(BUTTON_ID) as HTMLButtonElement | null;
