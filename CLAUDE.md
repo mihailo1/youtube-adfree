@@ -1,59 +1,40 @@
 # Stack
+
 - pnpm
 - WXT extension framework
-- Svelte 5 (content scripts and popup)
-- TypeScript (100% type safety, let TypeScript infer return types)
-- @ffmpeg/ffmpeg for video/audio processing
-- @webext-core/messaging for message passing
-- Chromium (Chrome, Edge, Opera) MV3 + Firefox MV3
-  - Single shared code path; branch only when an API genuinely diverges
-  - Offscreen API is Chrome-only; Firefox falls back to a hidden iframe hosted by the background event page (see `background/handlers/processor.ts`)
-  - Firefox manifest is emitted via the `manifest` function in `wxt.config.ts` (no `offscreen` permission, no `minimum_chrome_version`, gets `browser_specific_settings.gecko`)
+- Svelte 5 (popup / download UI)
+- Vidstack (ad-free in-page player)
+- TypeScript
+- @ffmpeg/ffmpeg for download muxing
+- @webext-core/messaging
+- Chromium MV3 + Firefox MV3
+
+# Ad-free player
+
+- Content script: `src/entrypoints/ad-free-watch.content.ts` — toggle + iframe overlay on `#movie_player`
+- Player page: `src/entrypoints/ad-free-player/` — Vidstack; `?embed=1` for in-page mode
+- Shared lib: `src/lib/ad-free/` — stream resolve, captions, bridge, keep-playing
+- Background: `src/entrypoints/background/handlers/ad-free-handlers.ts` — resolve via page-proxy
+- Prefer page-proxy for InnerTube; extension-origin fetch often gets HTTP 403
 
 # Code style
+
 - Use the `browser` namespace
-- Use early returns for readability and maintainability
-- Use functional programming
-- Use async/await whenever possible
-- Use DRY with separation of concerns, prioritizing readability
-- Minimize indentations
-- Use `for-of` instead of `.forEach`
-- Use modern browser and CSS features
-- Avoid `window.` prefixes unless it increases readability
-- Avoid `setTimeout` unless absolutely necessary
-- Avoid comments unless absolutely necessary - prefer descriptive names
-- Don't use em dashes - use regular hyphens
-- If a callback arrow function has a typed param, don't annotate the type explicitly
-- Avoid nested try/catch - flatten with early returns or extracted functions
-- Apply parallel modifications whenever possible
-
-# Naming conventions
-- Variables and functions: `camelCase`, full words (no abbreviations)
-- Module-level constants: `SCREAMING_SNAKE_CASE`
-- Exception: event handler first parameter is always `e`
-
-## Variable prefixes
-- Element: `el` prefix (e.g. `elButton`)
-- Index: `i` prefix (e.g. `iItem`), or bare `i` when iterating in a for loop/higher-order function
-- Boolean: `is` prefix (e.g. `isLoading`)
-
-# Hardcoded values
-- Strings: use enums; if no enum fits, use a descriptive `SCREAMING_SNAKE_CASE` constant
-- Numbers: use a descriptive `SCREAMING_SNAKE_CASE` constant
-
-# Svelte
-- Single-use functions: inline them
-- `@attach` arrow functions in templates: extract to named functions in the script block
+- Early returns, async/await, functional style
+- Prefer `for-of` over `.forEach`
+- Avoid comments unless necessary
+- Element variables: `el` prefix; booleans: `is` prefix
+- Module constants: `SCREAMING_SNAKE_CASE`
 
 # Storage
-- Don't automatically persist to storage - rely on fallback values; only use storage when the user has explicitly set something
 
-# UI copy
-- No full stops at end of messages
-- Informal tone
+- Stream payloads: `browser.storage.session` key `ad-free-stream:{videoId}`
+- Visitor data cache: `browser.storage.local` key `ad-free-player-visitor-data`
 
-# Linting
-After each modification, lint with oxlint, ESLint, Stylelint, svelte-check, and `npx fallow audit`.
+# Quality gates
 
-# Dev server
-`scripts/dev-server.ts` auto-rebuilds and reloads the extension and every YouTube page on any file change under `src/`.
+```sh
+pnpm compile
+pnpm lint
+pnpm build
+```

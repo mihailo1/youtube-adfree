@@ -19,17 +19,33 @@ const VISITOR_DATA_TOKEN = "__YTDL_VISITOR_DATA__";
 
 export type AndroidStreamingFormat = Prettify<{
   itag: number;
-  url: string;
+  url?: string;
   mimeType: string;
-  contentLength: string;
-  bitrate: number;
+  contentLength?: string;
+  bitrate?: number;
   width?: number;
   height?: number;
+  fps?: number;
+  qualityLabel?: string;
   audioChannels?: number;
   audioSampleRate?: string;
 }>;
 
+export type AndroidCaptionTrack = Prettify<{
+  baseUrl?: string;
+  name?: { simpleText?: string };
+  languageCode?: string;
+  kind?: string;
+  vssId?: string;
+  isTranslatable?: boolean;
+}>;
+
 export type AndroidPlayerResponse = Prettify<{
+  videoDetails?: {
+    title?: string;
+    author?: string;
+    lengthSeconds?: string;
+  };
   playabilityStatus?: {
     status?: string;
     reason?: string;
@@ -38,13 +54,22 @@ export type AndroidPlayerResponse = Prettify<{
     formats?: AndroidStreamingFormat[];
     adaptiveFormats?: AndroidStreamingFormat[];
   };
+  captions?: {
+    playerCaptionsTracklistRenderer?: {
+      captionTracks?: AndroidCaptionTrack[];
+    };
+  };
 }>;
 
 type FetchFn = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
 
-type FetchAndroidPlayerResponseParams = Prettify<{
+export type FetchAndroidPlayerResponseParams = Prettify<{
   videoId: string;
   customFetch?: FetchFn;
+  // Real visitorData for extension-context fetches. When omitted, the
+  // VISITOR_DATA_TOKEN placeholder is used so MAIN-world page-proxy can
+  // substitute ytcfg.VISITOR_DATA.
+  visitorData?: string;
 }>;
 
 // Fetches a YouTube InnerTube `/player` response using the ANDROID_VR client
@@ -57,9 +82,12 @@ type FetchAndroidPlayerResponseParams = Prettify<{
 // `credentials: "include"` alone (with `visitorData` embedded in the context)
 // is sufficient to pass YouTube's anti-bot gate. Without `visitorData` the
 // response is `LOGIN_REQUIRED: "Sign in to confirm you're not a bot"`.
-async function fetchAndroidPlayerResponse({
-  videoId, customFetch
+// Extension-origin fetches are often HTTP 403 - prefer customFetch via the
+// YouTube tab page-proxy (see createPageProxyFetch).
+export async function fetchAndroidPlayerResponse({
+  videoId, customFetch, visitorData
 }: FetchAndroidPlayerResponseParams): Promise<AndroidPlayerResponse> {
+  const resolvedVisitorData = visitorData || VISITOR_DATA_TOKEN;
   const body = {
     context: {
       client: {
@@ -73,7 +101,7 @@ async function fetchAndroidPlayerResponse({
         osVersion: ANDROID_VR_OS_VERSION,
         hl: "en",
         gl: "US",
-        visitorData: VISITOR_DATA_TOKEN
+        visitorData: resolvedVisitorData
       }
     },
     videoId,
@@ -85,7 +113,8 @@ async function fetchAndroidPlayerResponse({
     method: "POST",
     credentials: "include",
     headers: {
-      "Content-Type": CONTENT_TYPE_JSON
+      "Content-Type": CONTENT_TYPE_JSON,
+      ...(visitorData ? { "X-Goog-Visitor-Id": visitorData } : {})
     },
     body: JSON.stringify(body)
   });

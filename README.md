@@ -1,73 +1,85 @@
-# YouTube Downloader
+# YouTube Ad-Free
 
-An MV3 browser extension that reverse-engineers YouTube's internal streaming infrastructure to download videos, playlists, and subscriptions - with full format control, multi-track audio, embedded subtitles, and a live download manager. Runs on Chromium and Firefox.
+**v1.0.0** — MV3 browser extension that swaps the YouTube watch player for an **ad-free in-page player**, with quality selection, captions, background playback, and the original download tooling from the upstream project.
 
-Built by [Avi](https://avi12.com) with supervised [Claude Code](https://claude.com/product/claude-code)
+Built on top of [avi12/youtube-downloader](https://github.com/avi12/youtube-downloader) (WXT + Svelte 5 + InnerTube / ANDROID_VR streaming).
 
-<p>
-  <img src="https://user-images.githubusercontent.com/6422804/135838451-1c3ac8f1-409f-4aec-972f-1d077c05f1ea.png" height="30" alt="Google Chrome">
-  <img src="https://user-images.githubusercontent.com/6422804/135838702-e852bb47-8c0d-4275-baf1-8adc1c50a3c1.png" height="30" alt="Microsoft Edge">
-  <img src="https://user-images.githubusercontent.com/6422804/135838972-113f73a3-6a04-48a9-ae04-754f25bc6eb0.png" height="30" alt="Opera">
-  <img src="https://upload.wikimedia.org/wikipedia/commons/e/e7/Opera_GX_Icon.svg?utm_source=commons.wikimedia.org&utm_campaign=index&utm_content=original" height="30" alt="Opera GX">
-  <img src="https://upload.wikimedia.org/wikipedia/commons/9/9d/Brave_lion_icon.svg" height="30" alt="Brave">
-  <img src="https://upload.wikimedia.org/wikipedia/commons/e/e4/Vivaldi_web_browser_logo.svg" height="30" alt="Vivaldi">
-  <img src="https://upload.wikimedia.org/wikipedia/commons/a/a0/Firefox_logo%2C_2019.svg" height="30" alt="Firefox">
-</p>
+## Features
 
-## Installation
+- **In-page toggle** — red **Ad-Free** control on the top-left of the YouTube player; no extra tab
+- **Ad-free playback** — streams via ANDROID_VR InnerTube (direct CDN URLs), not the YouTube HTML5 ad pipeline
+- **Quality menu** — Vidstack Settings → Quality (multi-rendition sources)
+- **Captions** — WebVTT tracks from the player response / page data (Settings → Captions)
+- **State sync** — switching between YouTube and Ad-Free keeps current time (and pauses on switch)
+- **Keep playing** — playback continues when you focus another OS window (best-effort against Chrome media pause)
+- **Downloads** — full upstream download / playlist / FFmpeg mux pipeline remains available
 
-Open the [Releases page](https://github.com/avi12/youtube-downloader/releases) and download the latest file for your browser.
+## Install (development build)
 
-**Chrome / Edge / Opera / Brave / Vivaldi**
+```sh
+pnpm install
+pnpm build
+```
 
-Chrome blocks `.crx` files that don't come from the Chrome Web Store (it rejects them with `CRX_REQUIRED_PROOF_MISSING`), so install from the zip instead:
+1. Open `chrome://extensions` (or Edge / Brave equivalent)
+2. Enable **Developer mode**
+3. **Load unpacked** → select `.output/chrome-mv3`
 
-1. Download `youtube-downloader-*-chrome.zip` and unzip it
-2. Open `chrome://extensions` (or `edge://extensions`, `opera://extensions`)
-3. Turn on **Developer mode** with the toggle in the top-right corner
-4. Click **Load unpacked** and select the unzipped folder
+Firefox:
 
-The extension checks for new releases and shows a banner in the popup when an update is ready - grab the new zip and load it the same way.
+```sh
+pnpm build:firefox
+```
 
-**Brave and other Chromium browsers that accept sideloaded CRXs**
+Then load `.output/firefox-mv3` via `about:debugging` → This Firefox → Load Temporary Add-on.
 
-1. Download `youtube-downloader-*-chrome.crx`
-2. Open `brave://extensions`
-3. Turn on **Developer mode**
-4. Drag the `.crx` file onto the extensions page and confirm the installation
+## Usage
 
-If your Chromium browser rejects the CRX, use the Chrome zip instructions above instead.
+1. Open a YouTube **watch** page
+2. Click **Ad-Free** (top-left on the video)
+3. Wait for the overlay player to load, then press play
+4. Click **YouTube** on the same control to switch back (position is preserved; both sides pause on switch)
+5. In the Ad-Free player: **Settings** for quality and captions
 
-**Firefox**
+## Develop
 
-1. In Firefox, click the `youtube-downloader-*-firefox.xpi` link on the Releases page
-2. Confirm the install when Firefox asks
+```sh
+pnpm install
+pnpm dev            # Chrome, rebuild + reload
+pnpm dev:firefox    # Firefox
+pnpm compile        # Typecheck
+pnpm lint
+```
 
-Firefox keeps the extension up to date on its own.
+## Architecture (ad-free path)
+
+| Piece | Role |
+| --- | --- |
+| `src/entrypoints/ad-free-watch.content.ts` | Injects toggle, mounts keep-alive iframe overlay, syncs state with YouTube |
+| `src/entrypoints/ad-free-player/` | Vidstack player page (`embed=1` for in-page iframe) |
+| `src/lib/ad-free/resolve-stream.ts` | ANDROID_VR player API → quality list + captions |
+| `src/lib/ad-free/bridge.ts` | `postMessage` protocol between watch page and player iframe |
+| `src/lib/ad-free/keep-playing.ts` | Background playback keep-alive for the embed player |
+| `src/entrypoints/background/handlers/ad-free-handlers.ts` | Resolves streams via YouTube-tab page-proxy (avoids InnerTube 403) |
+
+Stream resolution prefers the existing page-proxy path (`page-sabr-fetch` + `visitorData` substitution) used by the downloader on Firefox/anti-bot gates.
+
+See [ARCHITECTURE.md](ARCHITECTURE.md) for the upstream download pipeline, SABR fallbacks, and messaging map.
 
 ## Tech stack
 
 | Package | Purpose |
 | --- | --- |
-| [WXT](https://wxt.dev) | Extension build framework (MV3, hot-reload, sandboxed pages) |
-| [Svelte 5](https://svelte.dev) | UI for content scripts and popup |
-| [@ffmpeg/core](https://ffmpegwasm.netlify.app) | FFmpeg compiled to WASM - muxes video, audio, subtitles, and cover art in-browser |
-| [@webext-core/messaging](https://webext-core.aklinker1.io/messaging) | Typed message passing between extension contexts |
-| [googlevideo](https://npm.im/googlevideo) | YouTube SABR adaptive streaming protobuf protocol |
-| [fflate](https://npm.im/fflate) | ZIP compression for batch downloads |
+| [WXT](https://wxt.dev) | Extension framework (MV3) |
+| [Svelte 5](https://svelte.dev) | Popup / download UI |
+| [Vidstack](https://github.com/vidstack/player) | Ad-free player UI |
+| [googlevideo](https://npm.im/googlevideo) | SABR / download path |
+| [@ffmpeg/core](https://ffmpegwasm.netlify.app) | In-browser mux for downloads |
 
-## Architecture
+## Versioning
 
-How it works — system diagram, codemap, invariants, the Chrome 4-layer fallback chain, the Firefox `ANDROID_VR` bypass, and cross-world progress propagation — lives in [ARCHITECTURE.md](ARCHITECTURE.md).
+This fork is versioned independently starting at **1.0.0**. Upstream downloader history remains in git history.
 
-The Firefox bypass (routing player requests through the `ANDROID_VR` InnerTube client to get direct CDN URLs) was reverse-engineered by reading [yt-dlp](https://github.com/yt-dlp/yt-dlp)'s YouTube extractor — credit to that project for documenting the InnerTube client matrix.
+## License
 
-## Contribute
-
-```sh
-pnpm install
-pnpm dev            # Chrome — auto-rebuilds and reloads on every change
-pnpm dev:firefox    # Firefox
-```
-
-[CONTRIBUTING.md](CONTRIBUTING.md) covers the full dev workflow: quality gates, code style, common tasks (adding a setting, tracing a download bug), and the Linux VM setup for reproducing Linux-only Chrome bugs. [ARCHITECTURE.md](ARCHITECTURE.md) explains how the pieces fit together.
+MIT — same as upstream. Credit to [Avi](https://avi12.com) / [youtube-downloader](https://github.com/avi12/youtube-downloader) for the download architecture and InnerTube integration.

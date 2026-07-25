@@ -1,7 +1,7 @@
 {
-  "name": "youtube-downloader",
-  "version": "2.4.4",
-  "description": "A browser extension for downloading video and audio from YouTube.",
+  "name": "youtube-adfree",
+  "version": "1.0.0",
+  "description": "Ad-free YouTube player extension with optional download tools (fork of avi12/youtube-downloader).",
   "repository": "https://github.com/avi12/youtube-downloader",
   "author": "Avi <avi6106@gmail.com>",
   "license": "MIT",
@@ -32,6 +32,8 @@
     "@webext-core/messaging": "^3.0.2",
     "fflate": "^0.8.3",
     "googlevideo": "^4.0.4",
+    "media-icons": "^0.10.0",
+    "vidstack": "^1.15.6",
     "zod": "^4.4.3"
   },
   "devDependencies": {

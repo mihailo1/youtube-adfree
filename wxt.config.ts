@@ -8,9 +8,7 @@ const ffmpegAssets = [
   }
 ];
 
-const FIREFOX_GECKO_ID = "youtube-downloader@avi12.com";
-const UPDATE_URL_BASE = "https://avi12.github.io/youtube-downloader";
-const FIREFOX_UPDATE_URL = `${UPDATE_URL_BASE}/updates.json`;
+const FIREFOX_GECKO_ID = "youtube-adfree@local";
 const { CSP_REPORT_URI = "" } = process.env;
 const EXTENSION_PAGES_CSP = `script-src 'self' 'wasm-unsafe-eval'; object-src 'self'${CSP_REPORT_URI ? `; report-uri ${CSP_REPORT_URI}` : ""}`;
 const sharedPermissions: Browser.runtime.ManifestPermission[] = [
@@ -30,12 +28,13 @@ export default defineConfig({
   modules: ["@wxt-dev/module-svelte"],
   manifestVersion: 3,
   manifest: ({ browser }) => ({
-    name: "YouTube Downloader",
-    description: "Download YouTube videos and audio directly from the page",
+    name: "YouTube Ad-Free",
+    description: "In-page ad-free YouTube player with quality, captions, and optional downloads",
     permissions: browser === "firefox" ? sharedPermissions : [...sharedPermissions, "offscreen"],
     host_permissions: [
       "https://*.youtube.com/*",
-      "https://*.googlevideo.com/*"
+      "https://*.googlevideo.com/*",
+      "https://i.ytimg.com/*"
     ],
     content_security_policy: {
       extension_pages: EXTENSION_PAGES_CSP
@@ -49,8 +48,8 @@ export default defineConfig({
     },
     web_accessible_resources: [
       {
-        resources: ["offscreen.html"],
-        matches: ["<all_urls>"]
+        resources: ["offscreen.html", "ad-free-player.html"],
+        matches: ["https://www.youtube.com/*", "https://youtube.com/*", "<all_urls>"]
       }
     ],
     ...browser === "firefox"
@@ -59,7 +58,6 @@ export default defineConfig({
           gecko: {
             id: FIREFOX_GECKO_ID,
             strict_min_version: "147.0",
-            update_url: FIREFOX_UPDATE_URL,
             data_collection_permissions: {
               required: ["none"],
               optional: ["technicalAndInteraction"]
@@ -72,7 +70,7 @@ export default defineConfig({
       }
   }),
   zip: {
-    artifactTemplate: "youtube-downloader-{{version}}-{{browser}}.zip",
+    artifactTemplate: "youtube-adfree-{{version}}-{{browser}}.zip",
     excludeSources: [
       "user-profiles/**",
       ".output/**",

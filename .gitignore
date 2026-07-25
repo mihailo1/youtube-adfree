@@ -7,6 +7,7 @@
 /.verify-output/
 
 .DS_Store
+**/.DS_Store
 .idea/
 *.log
 .claude/
@@ -14,7 +15,10 @@ user-profiles/
 keys/
 .env
 .env.local
+instructions.txt
 
 # Ad hoc debug artifacts from scripts/
 /scripts/*.png
+/scripts/bisect-log*.txt
+/scripts/cherry-pick-loop.results.json
 

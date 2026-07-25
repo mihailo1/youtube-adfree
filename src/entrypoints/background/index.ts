@@ -1,3 +1,4 @@
+import { registerAdFreeHandlers } from "./handlers/ad-free-handlers";
 import { registerChunkHandlers } from "./handlers/chunk-handlers";
 import { registerDownloadHandlers } from "./handlers/download-handlers";
 import { registerPipelineHandlers } from "./handlers/pipeline-handlers";
@@ -28,6 +29,7 @@ export default defineBackground(() => {
     sendMessageToTab(MessageType.SabrBodyReady, undefined, tabId).catch(() => {});
   });
 
+  registerAdFreeHandlers();
   registerChunkHandlers();
   registerDownloadHandlers();
   registerPipelineHandlers();

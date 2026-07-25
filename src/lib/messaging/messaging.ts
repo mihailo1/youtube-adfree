@@ -1,3 +1,4 @@
+import type { AdFreeStreamPayload } from "@/lib/ad-free/resolve-stream";
 import type {
   DownloadRequest,
   DownloadType,
@@ -43,7 +44,9 @@ export const MessageType = {
   ReportWorkerDownloadFailed: "reportWorkerDownloadFailed",
   ForwardProgressUpdate: "forwardProgressUpdate",
   ReportPageProgress: "reportPageProgress",
-  PageSabrFetch: "pageSabrFetch"
+  PageSabrFetch: "pageSabrFetch",
+  OpenAdFreePlayer: "openAdFreePlayer",
+  ResolveAdFreeStream: "resolveAdFreeStream"
 } as const;
 
 export type PageSabrFetchRequest = Prettify<{
@@ -283,6 +286,14 @@ export interface ProtocolMap {
   }): void;
 
   pageSabrFetch(data: PageSabrFetchRequest): PageSabrFetchResponse;
+
+  openAdFreePlayer(data: {
+    videoId: string;
+  }): void;
+
+  resolveAdFreeStream(data: {
+    videoId: string;
+  }): AdFreeStreamPayload;
 }
 
 export const { sendMessage, onMessage } =
