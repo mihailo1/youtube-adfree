@@ -10,7 +10,8 @@ import { MessageType, sendMessage } from "@/lib/messaging/messaging";
 const PANEL_ID = "ytdl-region-hidden-panel";
 const STYLE_ID = "ytdl-region-hidden-style";
 const TOGGLE_ID = "ytdl-region-hidden-toggle";
-const DEFAULT_GL = "US";
+/** Must match channel-region-list DEFAULT_GL (Jordan). */
+const DEFAULT_GL = "JO";
 
 const PANEL_CSS = `
 #${TOGGLE_ID} {

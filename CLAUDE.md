@@ -44,7 +44,7 @@
 ## Region-hidden channel list
 
 - Content: `src/entrypoints/channel-region-list.content.ts` on channel **Videos** and **Streams** tabs
-- Lib: `src/lib/ad-free/channel-region-list.ts` — uploads `UU…` + tab browse with `gl=US` (multi-`gl` later)
+- Lib: `src/lib/ad-free/channel-region-list.ts` — uploads `UU…` + tab browse with `gl=JO` (Jordan; multi-`gl` later)
 - Channel id: meta/canonical/links/`channelMetadataRenderer` (not only first `channelId` in HTML)
 
 # Code style

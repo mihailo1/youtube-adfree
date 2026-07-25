@@ -94,7 +94,7 @@ export function registerAdFreeHandlers() {
 
   onMessage(MessageType.ResolveChannelRegionList, async ({ data, sender }) => {
     const youtubeTabId = await findYouTubeTabId(sender.tab?.id);
-    const gl = data.gl ?? "US";
+    const gl = data.gl ?? "JO";
     const tab = data.tab ?? "videos";
     const errors: string[] = [];
 

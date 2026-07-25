@@ -9,7 +9,8 @@ const CHANNEL_ID_PATTERN = /"channelId":"(UC[\w-]{22})"/;
 const EXTERNAL_ID_PATTERN = /"externalId":"(UC[\w-]{22})"/;
 const BROWSE_ID_PATTERN = /"browseId":"(UC[\w-]{22})"/;
 const MAX_CONTINUATION_PAGES = 20;
-const DEFAULT_GL = "US";
+/** Reference region for hidden-video discovery (Jordan). */
+const DEFAULT_GL = "JO";
 const DEFAULT_HL = "en";
 const DEFAULT_CLIENT_VERSION = "2.20240101.00.00";
 
