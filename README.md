@@ -2,6 +2,8 @@
 
 **v1.0.0** — MV3 browser extension that swaps the YouTube watch player for an **ad-free in-page player**, with quality selection, captions, background playback, and the original download tooling from the upstream project.
 
+**Repo:** [mihailo1/youtube-adfree](https://github.com/mihailo1/youtube-adfree)
+
 Built on top of [avi12/youtube-downloader](https://github.com/avi12/youtube-downloader) (WXT + Svelte 5 + InnerTube / ANDROID_VR streaming).
 
 ## Features
