@@ -1,4 +1,4 @@
-const KEEP_PLAYING_POLL_MS = 400;
+const KEEP_PLAYING_POLL_MS = 1200;
 
 export type KeepPlayingController = {
   /** User wants media to keep playing (survives window blur / tab backgrounding). */

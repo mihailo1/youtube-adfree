@@ -55,6 +55,56 @@ body.is-embed #app {
   aspect-ratio: 16 / 9;
 }
 
+/* Custom single-source quality picker (avoids multi-src buffer leaks) */
+.quality-menu {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  z-index: 20;
+  pointer-events: auto;
+}
+.quality-menu-button {
+  background: rgba(0, 0, 0, 0.72);
+  color: #fff;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 16px;
+  padding: 6px 12px;
+  font: 500 12px/1.2 "YouTube Sans", Roboto, Arial, sans-serif;
+  cursor: pointer;
+}
+.quality-menu-button:hover {
+  background: rgba(40, 40, 40, 0.9);
+}
+.quality-menu-list {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  margin: 0;
+  padding: 6px;
+  list-style: none;
+  min-width: 140px;
+  max-height: 240px;
+  overflow: auto;
+  background: #212121;
+  border: 1px solid #3f3f3f;
+  border-radius: 10px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+}
+.quality-menu-item {
+  padding: 8px 10px;
+  border-radius: 6px;
+  color: #f1f1f1;
+  font: 500 12px/1.2 "YouTube Sans", Roboto, Arial, sans-serif;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.quality-menu-item:hover {
+  background: #3f3f3f;
+}
+.quality-menu-item.is-selected {
+  background: rgb(255 0 0 / 0.18);
+}
+
 #shell.is-embed #player-wrap {
   flex: 1;
   aspect-ratio: auto;

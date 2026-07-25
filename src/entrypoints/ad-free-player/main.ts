@@ -147,19 +147,15 @@ function appendCaptionTracks(
 type CompanionAudioController = {
   setQuality: (quality: AdFreeQualityOption | null) => void;
   syncFromPlayer: () => void;
-  /** Hold audio until video is actually playing (seek / quality change). */
   suspend: () => void;
-  /** Align + start audio only when video is in a playable state. */
   releaseWhenPlaying: () => void;
+  /** Tear down the audio element completely (frees decoded buffers). */
+  dispose: () => void;
 };
 
 /**
  * Separate audio element for adaptive (video-only + audio-only) streams.
- *
- * Audio CDN chunks arrive faster than video, so starting audio on "play"/"seeked"
- * makes a short burst that then jumps when we re-sync to the video clock.
- * Gate: audio stays paused+muted until the video fires a real "playing" event
- * after seek/buffer/quality changes.
+ * Gated until video "playing"; fully recreated on quality change to drop buffers.
  */
 function createCompanionAudio(
   elPlayer: MediaPlayerEl,
@@ -167,15 +163,30 @@ function createCompanionAudio(
 ): CompanionAudioController {
   let elAudio: HTMLAudioElement | null = null;
   let activeAudioUrl: string | null = null;
-  /** When true, audio must not output sound even if the player is "playing". */
   let isSuspended = false;
+
+  const disposeAudioElement = () => {
+    if (!elAudio) {
+      return;
+    }
+    try {
+      elAudio.pause();
+      elAudio.removeAttribute("src");
+      elAudio.load();
+    } catch {
+      // ignore
+    }
+    elAudio.remove();
+    elAudio = null;
+    activeAudioUrl = null;
+  };
 
   const ensureAudio = () => {
     if (elAudio) {
       return elAudio;
     }
     elAudio = document.createElement("audio");
-    elAudio.preload = "auto";
+    elAudio.preload = "metadata";
     elAudio.setAttribute("playsinline", "");
     elAudio.hidden = true;
     elMount.append(elAudio);
@@ -187,7 +198,6 @@ function createCompanionAudio(
       return;
     }
     elAudio.pause();
-    // Keep muted while suspended so a late play() cannot blip
     elAudio.muted = true;
   };
 
@@ -205,7 +215,7 @@ function createCompanionAudio(
       try {
         elAudio.currentTime = playerTime;
       } catch {
-        // ignore seek before audio metadata
+        // ignore
       }
     }
     elAudio.playbackRate = Number(elPlayer.playbackRate ?? 1) || 1;
@@ -229,7 +239,6 @@ function createCompanionAudio(
       elAudio.muted = Boolean(elPlayer.muted);
       return;
     }
-    // Only unlock when the video element is actually rendering frames
     isSuspended = false;
     alignClock();
     applyUserVolume();
@@ -248,12 +257,10 @@ function createCompanionAudio(
     isSuspended = false;
     silentStop();
   });
-  // Do NOT start audio on "play" — that fires while still buffering after seek.
   elPlayer.addEventListener("playing", () => {
     releaseWhenPlaying();
   });
   elPlayer.addEventListener("seeked", () => {
-    // Stay suspended; prepare clock but no sound until "playing"
     if (elAudio && activeAudioUrl) {
       alignClock();
       silentStop();
@@ -271,28 +278,21 @@ function createCompanionAudio(
   return {
     suspend,
     releaseWhenPlaying,
+    dispose: disposeAudioElement,
     setQuality(quality) {
-      // Quality switch always loads a new video stream first — hold audio
       suspend();
+      // Always drop the previous audio element so decoded buffers can be GC'd
+      disposeAudioElement();
 
       if (!quality || quality.isProgressive || !quality.audioUrl) {
-        activeAudioUrl = null;
-        if (elAudio) {
-          elAudio.pause();
-          elAudio.removeAttribute("src");
-          elAudio.load();
-        }
         return;
       }
 
+      activeAudioUrl = quality.audioUrl;
       const audio = ensureAudio();
-      if (activeAudioUrl !== quality.audioUrl) {
-        activeAudioUrl = quality.audioUrl;
-        audio.src = quality.audioUrl;
-      }
+      audio.src = quality.audioUrl;
       alignClock();
       silentStop();
-      // Wait for video "playing" after the new source settles
     },
     syncFromPlayer() {
       if (elPlayer.paused) {
@@ -303,28 +303,93 @@ function createCompanionAudio(
         }
         return;
       }
-      // If already playing frames, unlock; otherwise keep suspended
       releaseWhenPlaying();
     }
   };
 }
 
-function findQualityForPlayer(
-  elPlayer: MediaPlayerEl,
-  qualities: AdFreeQualityOption[],
-  bySrc: Map<string, AdFreeQualityOption>
-): AdFreeQualityOption | null {
-  const current = elPlayer.quality;
-  if (current?.id) {
-    const byId = qualities.find(q => q.id === current.id);
-    if (byId) {
-      return byId;
+/** Drop buffered media from the provider video element(s). */
+function hardResetVideoElements(elPlayer: MediaPlayerEl) {
+  try {
+    elPlayer.pause?.();
+  } catch {
+    // ignore
+  }
+  try {
+    // Detach current source so the previous progressive buffer can be GC'd
+    elPlayer.src = "";
+  } catch {
+    // ignore
+  }
+  for (const el of elPlayer.querySelectorAll("video")) {
+    const elVideo = el as HTMLVideoElement;
+    try {
+      elVideo.pause();
+      elVideo.removeAttribute("src");
+      elVideo.srcObject = null;
+      elVideo.load();
+    } catch {
+      // ignore
     }
   }
-  if (current?.src && typeof current.src === "string") {
-    return bySrc.get(current.src) ?? null;
+}
+
+function buildQualityMenu(
+  qualities: AdFreeQualityOption[],
+  selectedId: string,
+  onSelect: (quality: AdFreeQualityOption) => void
+) {
+  const elWrap = document.createElement("div");
+  elWrap.className = "quality-menu";
+  elWrap.id = "quality-menu";
+
+  const elButton = document.createElement("button");
+  elButton.type = "button";
+  elButton.className = "quality-menu-button";
+
+  const selected = qualities.find(q => q.id === selectedId) ?? qualities[0];
+  const setLabel = (label: string) => {
+    elButton.textContent = label;
+  };
+  setLabel(selected.label);
+
+  const elList = document.createElement("ul");
+  elList.className = "quality-menu-list";
+  elList.hidden = true;
+
+  const close = () => {
+    elList.hidden = true;
+  };
+
+  elButton.addEventListener("click", e => {
+    e.stopPropagation();
+    elList.hidden = !elList.hidden;
+  });
+  document.addEventListener("click", close);
+
+  for (const quality of qualities) {
+    const elItem = document.createElement("li");
+    elItem.className = "quality-menu-item";
+    if (quality.id === selected.id) {
+      elItem.classList.add("is-selected");
+    }
+    elItem.textContent = quality.label
+      + (quality.isProgressive ? " · muxed" : "");
+    elItem.addEventListener("click", e => {
+      e.stopPropagation();
+      for (const child of elList.children) {
+        child.classList.remove("is-selected");
+      }
+      elItem.classList.add("is-selected");
+      setLabel(quality.label);
+      close();
+      onSelect(quality);
+    });
+    elList.append(elItem);
   }
-  return qualities[0] ?? null;
+
+  elWrap.append(elButton, elList);
+  return { el: elWrap, setLabel };
 }
 
 /** Parse YouTube-style time: "90", "90.5", "1h2m3s", "2m", "45s". */
@@ -428,27 +493,22 @@ function renderPlayer(
     return;
   }
 
-  const qualitySources = qualities
-    .map(toVideoQualitySrc)
-    .filter((src): src is VideoQualitySrc => src != null);
-
-  if (qualitySources.length === 0) {
-    renderError(elContainer, "No valid stream URLs found");
-    return;
-  }
-
-  const bySrc = new Map(qualities.map(q => [q.videoUrl, q]));
-  const preferred = qualities.find(q => q.id === payload.selectedQualityId) ?? qualities[0];
-
-  qualitySources.sort((a, b) => {
-    if (a.id === preferred.id) {
-      return -1;
-    }
-    if (b.id === preferred.id) {
-      return 1;
+  // Prefer progressive/muxed first (one media buffer), then highest adaptive.
+  const orderedQualities = [...qualities].sort((a, b) => {
+    if (a.isProgressive !== b.isProgressive) {
+      return a.isProgressive ? -1 : 1;
     }
     return (b.height ?? 0) - (a.height ?? 0);
   });
+
+  let activeQuality = orderedQualities.find(q => q.id === payload.selectedQualityId)
+    ?? orderedQualities.find(q => q.isProgressive)
+    ?? orderedQualities[0];
+
+  if (!toVideoQualitySrc(activeQuality)) {
+    renderError(elContainer, "No valid stream URLs found");
+    return;
+  }
 
   const keepPlaying = isEmbed ? installKeepPlaying() : null;
 
@@ -478,7 +538,8 @@ function renderPlayer(
   elPlayer.setAttribute("view-type", "video");
   elPlayer.setAttribute("stream-type", "on-demand");
   elPlayer.setAttribute("load", "eager");
-  elPlayer.setAttribute("preload", "auto");
+  // metadata only — full auto preload of multi-hour streams OOMs after seeks/quality flips
+  elPlayer.setAttribute("preload", "metadata");
 
   const elProvider = document.createElement("media-provider");
   appendCaptionTracks(elProvider, payload.captions ?? []);
@@ -489,95 +550,14 @@ function renderPlayer(
 
   const companionAudio = createCompanionAudio(elPlayer, elPlayerWrap);
 
-  // Hold companion audio until the first real "playing" after sources attach
-  companionAudio.suspend();
-  elPlayer.src = qualitySources.length === 1 ? qualitySources[0] : qualitySources;
-  companionAudio.setQuality(preferred);
-
-  // Track play intent for background keep-alive.
-  // Any pause that follows recent user input (click on video, play button, space…)
-  // is treated as intentional — clear wantsPlaying so the poll won't re-play.
-  let lastUserInputAt = 0;
-  const USER_PAUSE_GESTURE_MS = 1_000;
-  const markUserInput = () => {
-    lastUserInputAt = Date.now();
-  };
-
-  elPlayer.addEventListener("play", () => {
-    keepPlaying?.setWantsPlaying(true);
-  });
-  elPlayer.addEventListener("playing", () => {
-    keepPlaying?.setWantsPlaying(true);
-  });
-  elPlayer.addEventListener("ended", () => {
-    keepPlaying?.setWantsPlaying(false);
-  });
-  elPlayer.addEventListener("pause", () => {
-    if (!keepPlaying) {
-      return;
-    }
-    // Bridge pause already cleared wantsPlaying; system/background pauses have no
-    // recent gesture and keep wantsPlaying so the poll resumes.
-    if (Date.now() - lastUserInputAt <= USER_PAUSE_GESTURE_MS) {
-      keepPlaying.setWantsPlaying(false);
-    }
-  });
-
-  // Capture clicks/taps anywhere on the player (video surface, gestures, controls)
-  // except pure scrubbing/menus where pause is not the intent.
-  elPlayer.addEventListener(
-    "pointerdown",
-    event => {
-      const target = event.target as Element | null;
-      if (!target) {
-        return;
-      }
-      if (
-        target.closest(
-          "media-menu, media-menu-button, media-menu-items, media-menu-portal, "
-          + "media-time-slider, media-volume-slider, media-slider, "
-          + ".vds-slider, .vds-menu, .vds-menu-items, input, select, textarea"
-        )
-      ) {
-        return;
-      }
-      markUserInput();
-    },
-    true
-  );
-  elPlayer.addEventListener(
-    "keydown",
-    event => {
-      if (
-        event.key === " "
-        || event.key === "k"
-        || event.key === "K"
-        || event.key === "MediaPlayPause"
-      ) {
-        markUserInput();
-      }
-    },
-    true
-  );
-
   let isSettled = false;
   let loadTimeoutId = 0;
-  let pendingSnapshot: { snapshot: AdFreePlaybackSnapshot; forcePause: boolean; requestId?: string } | null = null;
-
-  if (initialTime > 0 || startPaused) {
-    pendingSnapshot = {
-      snapshot: {
-        videoId,
-        currentTime: initialTime,
-        wasPlaying: false,
-        playbackRate: 1,
-        volume: 1,
-        muted: false
-      },
-      forcePause: true
-    };
-    keepPlaying?.setWantsPlaying(false);
-  }
+  let pendingSnapshot: {
+    snapshot: AdFreePlaybackSnapshot;
+    forcePause: boolean;
+    requestId?: string;
+  } | null = null;
+  let qualityMenuLabel = activeQuality.label;
 
   const clearLoadTimeout = () => {
     if (loadTimeoutId) {
@@ -604,6 +584,11 @@ function renderPlayer(
     if (elBadge) {
       elBadge.textContent = quality.label;
     }
+    qualityMenuLabel = quality.label;
+    const elMenuBtn = document.querySelector(".quality-menu-button");
+    if (elMenuBtn) {
+      elMenuBtn.textContent = quality.label;
+    }
     const nextPayload: AdFreeStreamPayload = {
       ...payload,
       selectedQualityId: quality.id,
@@ -617,15 +602,145 @@ function renderPlayer(
     });
   };
 
-  const onQualityOrSourceChange = () => {
-    const quality = findQualityForPlayer(elPlayer, qualities, bySrc);
-    if (!quality) {
+  /**
+   * Load exactly one quality URL. Never pass multi-src quality arrays to Vidstack —
+   * that kept every rendition's buffers alive (10–30GB RAM after repeated seeks).
+   */
+  const loadSingleQuality = (
+    quality: AdFreeQualityOption,
+    resumeAt: number,
+    wasPlaying: boolean
+  ) => {
+    const src = toVideoQualitySrc(quality);
+    if (!src) {
       return;
     }
-    // setQuality suspends audio until the next video "playing" event
+
+    companionAudio.suspend();
+    keepPlaying?.allowPause(() => {
+      try {
+        elPlayer.pause?.();
+      } catch {
+        // ignore
+      }
+    });
+
+    hardResetVideoElements(elPlayer);
     companionAudio.setQuality(quality);
+
+    elPlayer.src = src;
+    activeQuality = quality;
     persistSelected(quality);
+
+    pendingSnapshot = {
+      snapshot: {
+        videoId,
+        currentTime: Math.max(0, resumeAt),
+        wasPlaying,
+        playbackRate: Number(elPlayer.playbackRate ?? 1) || 1,
+        volume: Number(elPlayer.volume ?? 1) || 1,
+        muted: Boolean(elPlayer.muted)
+      },
+      forcePause: !wasPlaying
+    };
+    isSettled = false;
+    armLoadTimeout();
+    queueMicrotask(() => {
+      try {
+        elPlayer.startLoading?.();
+      } catch {
+        // ignore
+      }
+    });
   };
+
+  const qualityMenu = buildQualityMenu(
+    orderedQualities,
+    activeQuality.id,
+    quality => {
+      if (quality.id === activeQuality.id) {
+        return;
+      }
+      const resumeAt = Number(elPlayer.currentTime ?? 0) || 0;
+      const wasPlaying = !elPlayer.paused;
+      loadSingleQuality(quality, resumeAt, wasPlaying);
+    }
+  );
+
+  // Track play intent for background keep-alive.
+  let lastUserInputAt = 0;
+  const USER_PAUSE_GESTURE_MS = 1_000;
+  const markUserInput = () => {
+    lastUserInputAt = Date.now();
+  };
+
+  elPlayer.addEventListener("play", () => {
+    keepPlaying?.setWantsPlaying(true);
+  });
+  elPlayer.addEventListener("playing", () => {
+    keepPlaying?.setWantsPlaying(true);
+  });
+  elPlayer.addEventListener("ended", () => {
+    keepPlaying?.setWantsPlaying(false);
+  });
+  elPlayer.addEventListener("pause", () => {
+    if (!keepPlaying) {
+      return;
+    }
+    if (Date.now() - lastUserInputAt <= USER_PAUSE_GESTURE_MS) {
+      keepPlaying.setWantsPlaying(false);
+    }
+  });
+
+  elPlayer.addEventListener(
+    "pointerdown",
+    event => {
+      const target = event.target as Element | null;
+      if (!target) {
+        return;
+      }
+      if (
+        target.closest(
+          "media-menu, media-menu-button, media-menu-items, media-menu-portal, "
+          + "media-time-slider, media-volume-slider, media-slider, "
+          + ".vds-slider, .vds-menu, .vds-menu-items, .quality-menu, input, select, textarea"
+        )
+      ) {
+        return;
+      }
+      markUserInput();
+    },
+    true
+  );
+  elPlayer.addEventListener(
+    "keydown",
+    event => {
+      if (
+        event.key === " "
+        || event.key === "k"
+        || event.key === "K"
+        || event.key === "MediaPlayPause"
+      ) {
+        markUserInput();
+      }
+    },
+    true
+  );
+
+  if (initialTime > 0 || startPaused) {
+    pendingSnapshot = {
+      snapshot: {
+        videoId,
+        currentTime: initialTime,
+        wasPlaying: false,
+        playbackRate: 1,
+        volume: 1,
+        muted: false
+      },
+      forcePause: true
+    };
+    keepPlaying?.setWantsPlaying(false);
+  }
 
   const flushPendingSnapshot = () => {
     if (!pendingSnapshot) {
@@ -657,12 +772,9 @@ function renderPlayer(
     }
   }, { once: false });
 
-  elPlayer.addEventListener("quality-change", () => {
-    onQualityOrSourceChange();
-  });
-
-  elPlayer.addEventListener("source-change", () => {
-    onQualityOrSourceChange();
+  // After a long seek into unbuffered range, drop stale forward buffer pressure
+  elPlayer.addEventListener("waiting", () => {
+    companionAudio.suspend();
   });
 
   elPlayer.addEventListener("error", (event: Event) => {
@@ -738,8 +850,11 @@ function renderPlayer(
     });
   }
 
-  armLoadTimeout();
+  // Initial single-source load
+  companionAudio.suspend();
+  loadSingleQuality(activeQuality, initialTime, !startPaused && initialTime <= 0);
 
+  elPlayerWrap.append(qualityMenu.el);
   elShell.append(elPlayerWrap);
 
   if (!isEmbed) {
@@ -756,15 +871,15 @@ function renderPlayer(
     const elBadge = document.createElement("span");
     elBadge.id = "quality-badge";
     elBadge.className = "badge";
-    elBadge.textContent = preferred.label;
+    elBadge.textContent = qualityMenuLabel;
 
     const elHint = document.createElement("p");
     elHint.className = "quality-hint";
     const captionHint = (payload.captions?.length ?? 0) > 0
       ? ` · ${payload.captions.length} subtitle track(s) in Captions`
       : "";
-    elHint.textContent = qualitySources.length > 1
-      ? `Settings ⚙ → Quality / Captions${captionHint}`
+    elHint.textContent = orderedQualities.length > 1
+      ? `Quality menu (top-right) · Captions in Settings${captionHint}`
       : `Settings ⚙ → Captions${captionHint}`;
 
     elMeta.append(elTitle, elChannel, elBadge, elHint);
@@ -773,14 +888,6 @@ function renderPlayer(
   }
 
   elContainer.replaceChildren(elShell);
-
-  queueMicrotask(() => {
-    try {
-      elPlayer.startLoading?.();
-    } catch {
-      // ignore
-    }
-  });
 }
 
 async function loadStoredPayload(videoId: string): Promise<AdFreeStreamPayload | null> {
