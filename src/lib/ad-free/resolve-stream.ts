@@ -3,7 +3,13 @@ import {
   extractCaptionsFromPlayerResponse,
   isAdFreeCaptionTrack
 } from "@/lib/ad-free/captions";
+import {
+  type AdFreeChapter,
+  extractChaptersFromSource,
+  isAdFreeChapter
+} from "@/lib/ad-free/chapters";
 import { AD_FREE_STREAM_KEY_PREFIX } from "@/lib/ad-free/constants";
+import { extractStoryboardSpec } from "@/lib/ad-free/storyboard";
 import {
   type AndroidPlayerResponse,
   type AndroidStreamingFormat,
@@ -12,6 +18,7 @@ import {
 import type { Prettify } from "@/types";
 
 export type { AdFreeCaptionTrack } from "@/lib/ad-free/captions";
+export type { AdFreeChapter } from "@/lib/ad-free/chapters";
 
 const ITAG_PROGRESSIVE_HD = 22;
 const ITAG_PROGRESSIVE_SD = 18;
@@ -35,6 +42,8 @@ export type AdFreeStreamPayload = Prettify<{
   videoId: string;
   title: string;
   author: string;
+  /** Wall-clock length from ANDROID_VR videoDetails (0 if unknown). */
+  durationSeconds: number;
   /** @deprecated kept for older session payloads */
   progressiveUrl: string | null;
   /** @deprecated kept for older session payloads */
@@ -44,11 +53,31 @@ export type AdFreeStreamPayload = Prettify<{
   qualities: AdFreeQualityOption[];
   selectedQualityId: string;
   captions: AdFreeCaptionTrack[];
+  /**
+   * Raw YouTube storyboard spec (`playerStoryboardSpecRenderer.spec`).
+   * Expanded to sprite frames in the player (see `storyboard.ts`).
+   */
+  storyboardSpec: string | null;
+  /**
+   * Video chapters (markersMap / engagementPanels). Empty when the video has none
+   * or ANDROID_VR omitted them (watch page may merge later).
+   */
+  chapters: AdFreeChapter[];
   resolvedAt: number;
 }>;
 
 export function adFreeStreamStorageKey(videoId: string) {
   return `${AD_FREE_STREAM_KEY_PREFIX}${videoId}`;
+}
+
+export function deriveSelectedFields(selected: AdFreeQualityOption) {
+  return {
+    progressiveUrl: selected.isProgressive ? selected.videoUrl : null,
+    videoUrl: selected.isProgressive ? null : selected.videoUrl,
+    audioUrl: selected.audioUrl,
+    qualityLabel: selected.label,
+    selectedQualityId: selected.id
+  };
 }
 
 function hasUrl(format: AndroidStreamingFormat): format is AndroidStreamingFormat & { url: string } {
@@ -163,8 +192,8 @@ function collectProgressiveQualities(response: AndroidPlayerResponse): AdFreeQua
   // Stable priority for common progressive itags, then the rest by height.
   progressive.sort((a, b) => {
     const rank = (itag: number) => {
-      if (itag === ITAG_PROGRESSIVE_HD) return 2;
-      if (itag === ITAG_PROGRESSIVE_SD) return 1;
+      if (itag === ITAG_PROGRESSIVE_HD) {return 2;}
+      if (itag === ITAG_PROGRESSIVE_SD) {return 1;}
       return 0;
     };
     const rankDelta = rank(b.itag) - rank(a.itag);
@@ -216,31 +245,42 @@ export function buildAdFreeStreamPayload(
 
   const title = response.videoDetails?.title ?? "Unknown title";
   const author = response.videoDetails?.author ?? "Unknown author";
+  const lengthRaw = response.videoDetails?.lengthSeconds;
+  const durationSeconds = lengthRaw != null && Number.isFinite(Number(lengthRaw))
+    ? Math.max(0, Number(lengthRaw))
+    : 0;
   const adaptiveAudio = pickAdaptiveAudio(response);
   const audioUrl = adaptiveAudio?.url ?? null;
 
+  const progressiveQualities = collectProgressiveQualities(response);
   const adaptiveQualities = collectAdaptiveQualities(response, audioUrl);
-  // Adaptive list is preferred for quality switching; progressive is fallback only.
-  const qualities = adaptiveQualities.length > 0
-    ? adaptiveQualities
-    : collectProgressiveQualities(response);
+  // Progressive (muxed) first for stable default seek; adaptive for higher res.
+  const qualities = [...progressiveQualities, ...adaptiveQualities];
 
   if (qualities.length === 0) {
     throw new Error("No streamable formats found in the ANDROID_VR response");
   }
 
-  const selected = qualities[0];
+  // Default: best progressive, else highest adaptive
+  const selected = progressiveQualities
+    .slice()
+    .sort((a, b) => (b.height ?? 0) - (a.height ?? 0))[0]
+    ?? adaptiveQualities
+      .slice()
+      .sort((a, b) => (b.height ?? 0) - (a.height ?? 0))[0]
+    ?? qualities[0];
+
   return {
     videoId,
     title,
     author,
-    progressiveUrl: selected.isProgressive ? selected.videoUrl : null,
-    videoUrl: selected.isProgressive ? null : selected.videoUrl,
-    audioUrl: selected.audioUrl,
-    qualityLabel: selected.label,
+    durationSeconds,
+    ...deriveSelectedFields(selected),
     qualities,
-    selectedQualityId: selected.id,
     captions: extractCaptionsFromPlayerResponse(response),
+    storyboardSpec: extractStoryboardSpec(response),
+    // ANDROID_VR rarely includes markersMap; prefer empty and merge from the watch page.
+    chapters: extractChaptersFromSource(response, durationSeconds),
     resolvedAt: Date.now()
   };
 }
@@ -287,17 +327,23 @@ export function normalizeAdFreeStreamPayload(value: unknown): AdFreeStreamPayloa
     const captions = Array.isArray(record.captions)
       ? record.captions.filter(isAdFreeCaptionTrack)
       : [];
+    const durationSeconds = typeof record.durationSeconds === "number" && record.durationSeconds > 0
+      ? record.durationSeconds
+      : 0;
     return {
       videoId: record.videoId,
       title: record.title,
       author: typeof record.author === "string" ? record.author : "Unknown author",
-      progressiveUrl: selected.isProgressive ? selected.videoUrl : null,
-      videoUrl: selected.isProgressive ? null : selected.videoUrl,
-      audioUrl: selected.audioUrl,
-      qualityLabel: selected.label,
+      durationSeconds,
+      ...deriveSelectedFields(selected),
       qualities,
-      selectedQualityId: selected.id,
       captions,
+      storyboardSpec: typeof record.storyboardSpec === "string" && record.storyboardSpec.includes("|")
+        ? record.storyboardSpec
+        : null,
+      chapters: Array.isArray(record.chapters)
+        ? record.chapters.filter(isAdFreeChapter)
+        : [],
       resolvedAt: typeof record.resolvedAt === "number" ? record.resolvedAt : Date.now()
     };
   }
@@ -326,14 +372,19 @@ export function normalizeAdFreeStreamPayload(value: unknown): AdFreeStreamPayloa
     videoId: record.videoId,
     title: record.title,
     author: typeof record.author === "string" ? record.author : "Unknown author",
-    progressiveUrl,
-    videoUrl,
-    audioUrl,
-    qualityLabel: quality.label,
+    durationSeconds: typeof record.durationSeconds === "number" && record.durationSeconds > 0
+      ? record.durationSeconds
+      : 0,
+    ...deriveSelectedFields(quality),
     qualities: [quality],
-    selectedQualityId: quality.id,
     captions: Array.isArray(record.captions)
       ? record.captions.filter(isAdFreeCaptionTrack)
+      : [],
+    storyboardSpec: typeof record.storyboardSpec === "string" && record.storyboardSpec.includes("|")
+      ? record.storyboardSpec
+      : null,
+    chapters: Array.isArray(record.chapters)
+      ? record.chapters.filter(isAdFreeChapter)
       : [],
     resolvedAt: typeof record.resolvedAt === "number" ? record.resolvedAt : Date.now()
   };

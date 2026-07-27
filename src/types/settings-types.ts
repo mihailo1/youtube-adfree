@@ -51,6 +51,8 @@ export type Options = Prettify<{
   videoQuality: number;
   enhancedBitrate: boolean;
   isShowNativeDownload: boolean;
+  /** When true, watch pages open in Ad-Free player by default (off by default). */
+  isAdFreeDefault: boolean;
   isNotifyOnIdle: boolean;
   isRevealOnComplete: boolean;
   playlistDownloadMode: PlaylistDownloadMode;

@@ -25,6 +25,7 @@ export const INITIAL_OPTIONS: Options = {
   videoQuality: DEFAULT_VIDEO_QUALITY,
   enhancedBitrate: true,
   isShowNativeDownload: false,
+  isAdFreeDefault: false,
   isNotifyOnIdle: false,
   isRevealOnComplete: false,
   playlistDownloadMode: PlaylistDownloadMode.Fast,

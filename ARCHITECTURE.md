@@ -114,6 +114,9 @@ Each top-level directory under `src/` owns one layer of the relay.
 | `src/entrypoints/mux-worker/` | Web Worker that drives `@ffmpeg/core` to mux video + audio + subtitles + cover art. |
 | `src/entrypoints/popup/` | Browser-action popup. Download history (IndexedDB + blob store), live progress, format-change dialog, settings. |
 | `src/lib/youtube/` | YouTube-specific knowledge: Innertube schemas, SABR protocol, BotGuard / PO token, format helpers, signature decryptor. |
+| `src/entrypoints/ad-free-watch.content.ts` | Orchestration: toggle, park/unpark, overlay, bridge to player iframe. |
+| `src/entrypoints/ad-free-player/` | Vidstack shell + wires `createPlaybackEngine` + custom quality menu. |
+| `src/lib/ad-free/` | Stream resolve, captions, bridge, keep-playing, youtube-time, content-dom/overlay/snapshot/bridge-client, **youtube-park**, **playback-engine**, **quality-menu**. |
 | `src/lib/messaging/` | Typed buses: cross-world between MAIN and ISOLATED via `CustomEvent`; runtime between content and BG; offscreen between BG and offscreen via `MessagePort`; window between page and extension via `window.postMessage`. |
 | `src/lib/download-pipeline/` | Browser-agnostic post-fetch pipeline: stream processor, mux job builder, FFmpeg instance, blob download, recent-downloads store. |
 | `src/lib/storage/` | `wxt/storage`-backed items with per-item mutation locks, plus the recent-downloads IndexedDB store (entries + blob cache, quota eviction). |
@@ -138,6 +141,38 @@ These are the rules the rest of the code relies on. Many are "absence of somethi
 - **The Retry button is for unrecoverable errors only.** Auto-retry handles 5xx / 429 / network reset / stall silently (5 s / 20 s / 60 s backoff, 3 attempts) via [`scheduleAutoRetry`](src/entrypoints/background/download/network-retry.ts). If the user sees Retry, the failure is a class that a fresh attempt can't fix on its own — FFmpeg mux failure, codec parse error, attestation wall, OPFS write error.
 - **zod runs jitless because the YouTube page enforces Trusted Types.** MAIN-world code can't use the `eval`/`Function` that zod's schema JIT relies on, so every schema imports `z` from [`src/lib/zod.ts`](src/lib/zod.ts), which calls `z.config({ jitless: true })` once. Importing `zod` directly throws on a YouTube page.
 - **Recent-download caching is best-effort and never blocks the save.** [`addRecentDownload`](src/lib/storage/recent-downloads-db.ts) evicts the oldest cached entries to fit under the (unlimited-but-disk-bound) quota and returns `false` to skip rather than throwing; the actual `browser.downloads` save in [`persistAndTrigger`](src/lib/download-pipeline/blob-download.ts) always runs regardless. Cached entries live for 10 minutes, a window that resets whenever the popup closes.
+
+### Ad-Free Player — hard park + atomic single-rendition engine
+
+The Ad-Free player replaces YouTube's watch-page player with a Vidstack **shell** inside a fixed-position iframe overlay. Streams come from `ANDROID_VR` InnerTube (same bypass as the Firefox download path). Playback itself is owned by a generation-tokenled **PlaybackEngine** that loads exactly one rendition at a time. While Ad-Free is active, the original YouTube player is **hard-parked** (not merely CSS-hidden).
+
+```mermaid
+flowchart TB
+  Watch["YouTube watch page<br/>ad-free-watch.content.ts"]
+  Park["youtube-park.ts<br/>mute + block play + poll"]
+  Iframe["Player iframe<br/>ad-free-player/main.ts"]
+  Engine["playback-engine.ts<br/>FSM + generation token"]
+  BG["Background<br/>ad-free-handlers.ts"]
+
+  Watch -->|"enable"| Park
+  Park -->|"park / unpark"| YTPlayer["#movie_player"]
+  Watch -->|"resolve stream"| BG
+  BG -->|"ANDROID_VR InnerTube"| YTApi["youtubei/v1/player"]
+  YTApi --> BG --> Watch
+  Watch -->|"postMessage bridge"| Iframe
+  Iframe --> Engine
+  Engine -->|"single src"| Media["video OR video+audio pair"]
+```
+
+Key design points:
+
+- **Hard park + unload YouTube.** CSS hide alone left Polymer free to re-autoplay under the overlay. [`youtube-park.ts`](src/lib/ad-free/youtube-park.ts) continuously pauses+mutes, blocks `play`/`playing` on the YT `<video>`, no-ops `playVideo`/`loadVideoById` when present, and re-enforces on a ~500 ms poll. After Ad-Free is ready it **unloads** media (`stopVideo` + detach `<video>` src) to free decoder memory. On disable / SPA navigation it **reloads** via `loadVideoById` / `cueVideoById` from the Ad-Free snapshot (play intent preserved).
+- **Never reparent the iframe.** Moving an `<iframe>` in the DOM reloads its document in Chromium. The root stays on `documentElement`; only CSS position/size/visibility changes.
+- **Bridge security.** Both sides validate `event.source`: content script checks `=== iframe.contentWindow`, iframe checks `=== window.parent`.
+- **Single-rendition only.** Never pass multi-src arrays to Vidstack (older multi-src quality menus buffered every height and caused 10–30 GB RAM plus mini-repeats). Custom [`quality-menu.ts`](src/lib/ad-free/quality-menu.ts) picks an id; the engine loads one URL.
+- **PlaybackEngine FSM.** States `idle | loading | ready | playing | seeking | switching | error`. Every seek/quality/set-state bumps a generation token; stale async completions no-op. Progressive (muxed) is the default when available; adaptive adds a companion `<audio>` with barrier seek (video first, then audio, unlock only on real `playing`).
+- **Keep-playing.** Gated by `engine.isSafeToResume()` so blur resume cannot interrupt seek/quality transitions. `dispose()` restores all spoofed visibility descriptors and `HTMLMediaElement.prototype.pause`.
+- **Time sync.** Content script seeds Ad-Free from YouTube `currentTime` (or URL `t=`/`start=`). On toggle back: unpark → apply Ad-Free snapshot to YT.
 
 ## Deep dives
 

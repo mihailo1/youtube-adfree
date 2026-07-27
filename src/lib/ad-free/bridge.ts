@@ -52,6 +52,12 @@ export type AdFreeBridgeFromPlayer =
   | {
     type: typeof AD_FREE_BRIDGE_TYPE;
     action: "pong";
+  }
+  | {
+    type: typeof AD_FREE_BRIDGE_TYPE;
+    /** Vidstack controls visibility — hide top chrome (Ad-Free chip) in lockstep. */
+    action: "controls-visible";
+    visible: boolean;
   };
 
 export function isBridgeMessage(data: unknown): data is AdFreeBridgeToPlayer | AdFreeBridgeFromPlayer {

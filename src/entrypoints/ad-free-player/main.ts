@@ -11,24 +11,42 @@ import {
   AD_FREE_BRIDGE_TYPE,
   type AdFreeBridgeFromPlayer,
   type AdFreeBridgeToPlayer,
-  type AdFreePlaybackSnapshot,
   isBridgeMessage,
   isValidSnapshot
 } from "@/lib/ad-free/bridge";
+import { createAdFreeLogger } from "@/lib/ad-free/debug-log";
 import {
   type KeepPlayingController,
   installKeepPlaying
 } from "@/lib/ad-free/keep-playing";
 import {
+  createPlaybackEngine,
+  isMediaPlayerLike,
+  orderQualitiesForMenu,
+  pickDefaultQuality,
+  type MediaPlayerLike,
+  type PlaybackEngine
+} from "@/lib/ad-free/playback-engine";
+import { qualitySupportsMse } from "@/lib/ad-free/mse/mse-controller";
+import { createQualityMenu } from "@/lib/ad-free/quality-menu";
+import { installDefaultMenuItem } from "@/lib/ad-free/default-menu-item";
+import {
+  type AdFreeChapter,
+  chaptersToWebVtt,
+  normalizeChapters
+} from "@/lib/ad-free/chapters";
+import {
   type AdFreeCaptionTrack,
-  type AdFreeQualityOption,
   type AdFreeStreamPayload,
   adFreeStreamStorageKey,
+  deriveSelectedFields,
   normalizeAdFreeStreamPayload
 } from "@/lib/ad-free/resolve-stream";
+import { buildStoryboardThumbs } from "@/lib/ad-free/storyboard";
+import { readInitialTime } from "@/lib/ad-free/youtube-time";
 import { MessageType, sendMessage } from "@/lib/messaging/messaging";
 
-const CAN_PLAY_TIMEOUT_MS = 20_000;
+const log = createAdFreeLogger("player");
 
 function postToParent(message: AdFreeBridgeFromPlayer) {
   try {
@@ -37,28 +55,6 @@ function postToParent(message: AdFreeBridgeFromPlayer) {
     // ignore
   }
 }
-
-type VideoQualitySrc = {
-  src: string;
-  type?: string;
-  width: number;
-  height: number;
-  bitrate?: number | null;
-  id?: string;
-};
-
-type MediaPlayerEl = HTMLElement & {
-  src?: string | VideoQualitySrc | VideoQualitySrc[];
-  currentTime?: number;
-  paused?: boolean;
-  volume?: number;
-  muted?: boolean;
-  playbackRate?: number;
-  quality?: { id?: string; src?: string; height?: number; width?: number } | null;
-  startLoading?: () => void;
-  play?: () => Promise<void>;
-  pause?: () => void;
-};
 
 function createErrorElement(heading: string, message: string): HTMLElement {
   const elError = document.createElement("div");
@@ -90,62 +86,7 @@ function youtubeThumbnailUrl(videoId: string) {
   return `https://i.ytimg.com/vi/${encodeURIComponent(videoId)}/hqdefault.jpg`;
 }
 
-function guessMimeType(url: string, fallback?: string): string | undefined {
-  if (fallback?.startsWith("video/")) {
-    return fallback.split(";")[0]?.trim();
-  }
-  if (url.includes("mime=video%2Fwebm") || url.includes("mime=video/webm")) {
-    return "video/webm";
-  }
-  if (url.includes("mime=video%2Fmp4") || url.includes("mime=video/mp4")) {
-    return "video/mp4";
-  }
-  return undefined;
-}
-
-function toVideoQualitySrc(quality: AdFreeQualityOption): VideoQualitySrc | null {
-  if (!/^https?:\/\//i.test(quality.videoUrl)) {
-    return null;
-  }
-
-  const height = quality.height > 0 ? quality.height : 720;
-  const width = quality.width && quality.width > 0
-    ? quality.width
-    : Math.round(height * 16 / 9);
-
-  return {
-    src: quality.videoUrl,
-    type: guessMimeType(quality.videoUrl, quality.mimeType) ?? "video/mp4",
-    width,
-    height,
-    bitrate: quality.bitrate ?? null,
-    id: quality.id
-  };
-}
-
-function buildQualitySources(
-  qualities: AdFreeQualityOption[],
-  preferredId: string
-): VideoQualitySrc[] {
-  const sources = qualities
-    .map(toVideoQualitySrc)
-    .filter((src): src is VideoQualitySrc => src != null);
-  sources.sort((a, b) => {
-    if (a.id === preferredId) {
-      return -1;
-    }
-    if (b.id === preferredId) {
-      return 1;
-    }
-    return (b.height ?? 0) - (a.height ?? 0);
-  });
-  return sources;
-}
-
-function appendCaptionTracks(
-  elProvider: HTMLElement,
-  captions: AdFreeCaptionTrack[]
-) {
+function appendCaptionTracks(elProvider: HTMLElement, captions: AdFreeCaptionTrack[]) {
   for (const caption of captions) {
     if (!/^https?:\/\//i.test(caption.src)) {
       continue;
@@ -160,274 +101,136 @@ function appendCaptionTracks(
   }
 }
 
-type CompanionAudioController = {
-  setQuality: (quality: AdFreeQualityOption | null) => void;
-  syncFromPlayer: () => void;
-  suspend: () => void;
-  releaseWhenPlaying: () => void;
-  dispose: () => void;
-};
-
 /**
- * Adaptive audio is a separate element. Never play it until video is truly
- * "playing" after seek/buffer/quality change — otherwise audio CDN wins the race
- * and a short blip repeats when clocks re-align.
+ * Attach YouTube chapters as a VTT `kind="chapters"` track so Vidstack's
+ * default layout can render slider segments + hover title next to storyboard.
+ * Returns the blob URL to revoke on teardown (or null if skipped).
  */
-function createCompanionAudio(
-  elPlayer: MediaPlayerEl,
-  elMount: HTMLElement
-): CompanionAudioController {
-  let elAudio: HTMLAudioElement | null = null;
-  let activeAudioUrl: string | null = null;
-  let isSuspended = true;
+function appendChapterTrack(
+  elProvider: HTMLElement,
+  chapters: AdFreeChapter[],
+  durationSeconds: number
+): string | null {
+  const normalized = normalizeChapters(
+    chapters.map(chapter => ({
+      startSeconds: chapter.startSeconds,
+      title: chapter.title
+    })),
+    durationSeconds
+  );
+  if (normalized.length < 2) {
+    return null;
+  }
 
-  const disposeAudioElement = () => {
-    if (!elAudio) {
-      return;
-    }
-    try {
-      elAudio.pause();
-      elAudio.removeAttribute("src");
-      elAudio.load();
-    } catch {
-      // ignore
-    }
-    elAudio.remove();
-    elAudio = null;
-    activeAudioUrl = null;
-  };
-
-  const ensureAudio = () => {
-    if (elAudio) {
-      return elAudio;
-    }
-    elAudio = document.createElement("audio");
-    elAudio.preload = "metadata";
-    elAudio.setAttribute("playsinline", "");
-    elAudio.hidden = true;
-    elMount.append(elAudio);
-    return elAudio;
-  };
-
-  const silentStop = () => {
-    if (!elAudio) {
-      return;
-    }
-    elAudio.pause();
-    elAudio.muted = true;
-  };
-
-  const suspend = () => {
-    isSuspended = true;
-    silentStop();
-  };
-
-  const alignClock = () => {
-    if (!elAudio || !activeAudioUrl) {
-      return;
-    }
-    const playerTime = Number(elPlayer.currentTime ?? 0);
-    if (!Number.isFinite(playerTime)) {
-      return;
-    }
-    try {
-      if (Math.abs(elAudio.currentTime - playerTime) > 0.05) {
-        elAudio.currentTime = playerTime;
-      }
-    } catch {
-      // ignore until metadata
-    }
-    elAudio.playbackRate = Number(elPlayer.playbackRate ?? 1) || 1;
-  };
-
-  const applyUserVolume = () => {
-    if (!elAudio || isSuspended) {
-      return;
-    }
-    elAudio.volume = Number(elPlayer.volume ?? 1);
-    elAudio.muted = Boolean(elPlayer.muted);
-  };
-
-  const releaseWhenPlaying = () => {
-    if (!elAudio || !activeAudioUrl) {
-      return;
-    }
-    if (elPlayer.paused) {
-      isSuspended = true;
-      silentStop();
-      elAudio.muted = Boolean(elPlayer.muted);
-      return;
-    }
-
-    // Recover if the element errored out during a long seek
-    if (elAudio.error) {
-      const url = activeAudioUrl;
-      disposeAudioElement();
-      activeAudioUrl = url;
-      const audio = ensureAudio();
-      audio.src = url;
-    }
-
-    isSuspended = false;
-    alignClock();
-    applyUserVolume();
-    void elAudio.play().catch(() => {
-      // one retry after a short delay (audio element still loading)
-      window.setTimeout(() => {
-        if (!isSuspended && elAudio && !elPlayer.paused) {
-          alignClock();
-          applyUserVolume();
-          void elAudio.play().catch(() => {});
-        }
-      }, 120);
-    });
-  };
-
-  elPlayer.addEventListener("waiting", suspend);
-  elPlayer.addEventListener("stalled", suspend);
-  elPlayer.addEventListener("seeking", suspend);
-  elPlayer.addEventListener("emptied", suspend);
-  elPlayer.addEventListener("loadstart", suspend);
-  elPlayer.addEventListener("pause", () => {
-    silentStop();
-  });
-  elPlayer.addEventListener("ended", () => {
-    isSuspended = true;
-    silentStop();
-  });
-  // Only unlock on real frame playback — not on "play" while still buffering
-  elPlayer.addEventListener("playing", () => {
-    releaseWhenPlaying();
-  });
-  elPlayer.addEventListener("seeked", () => {
-    if (elAudio && activeAudioUrl) {
-      alignClock();
-      // stay silent until "playing"
-      silentStop();
-    }
-  });
-  elPlayer.addEventListener("can-play", () => {
-    // If already in playing state after seek into buffer, unlock
-    if (!elPlayer.paused && !isSuspended) {
-      releaseWhenPlaying();
-    }
-  });
-  elPlayer.addEventListener("volume-change", () => {
-    applyUserVolume();
-  });
-  elPlayer.addEventListener("rate-change", () => {
-    if (elAudio) {
-      elAudio.playbackRate = Number(elPlayer.playbackRate ?? 1) || 1;
-    }
-  });
-
-  return {
-    suspend,
-    releaseWhenPlaying,
-    dispose: disposeAudioElement,
-    setQuality(quality) {
-      suspend();
-      disposeAudioElement();
-      if (!quality || quality.isProgressive || !quality.audioUrl) {
-        return;
-      }
-      activeAudioUrl = quality.audioUrl;
-      const audio = ensureAudio();
-      audio.src = quality.audioUrl;
-      alignClock();
-      silentStop();
-    },
-    syncFromPlayer() {
-      if (elPlayer.paused) {
-        isSuspended = true;
-        silentStop();
-        if (elAudio) {
-          elAudio.muted = Boolean(elPlayer.muted);
-        }
-        return;
-      }
-      releaseWhenPlaying();
-    }
-  };
+  const vtt = chaptersToWebVtt(normalized);
+  const blobUrl = URL.createObjectURL(new Blob([vtt], { type: "text/vtt" }));
+  const elTrack = document.createElement("track");
+  elTrack.kind = "chapters";
+  elTrack.label = "Chapters";
+  elTrack.srclang = "en";
+  elTrack.default = true;
+  elTrack.src = blobUrl;
+  elTrack.id = "ytdl-chapters";
+  elProvider.append(elTrack);
+  return blobUrl;
 }
 
-function parseYoutubeTimeToSeconds(raw: string | null | undefined): number {
-  if (!raw) {
-    return 0;
-  }
-  const trimmed = raw.trim();
-  if (!trimmed) {
-    return 0;
-  }
-  if (/^\d+(\.\d+)?$/.test(trimmed)) {
-    const value = Number(trimmed);
-    return Number.isFinite(value) && value > 0 ? value : 0;
-  }
-  const match = trimmed.match(/^(?:(\d+)h)?(?:(\d+)m)?(?:(\d+(?:\.\d+)?)s)?$/i);
-  if (!match) {
-    return 0;
-  }
-  const total = Number(match[1] ?? 0) * 3600 + Number(match[2] ?? 0) * 60 + Number(match[3] ?? 0);
-  return Number.isFinite(total) && total > 0 ? total : 0;
-}
-
-function readInitialTime(params: URLSearchParams): number {
-  return parseYoutubeTimeToSeconds(params.get("t"))
-    || parseYoutubeTimeToSeconds(params.get("start"));
-}
-
-function capturePlayerSnapshot(elPlayer: MediaPlayerEl, videoId: string): AdFreePlaybackSnapshot {
-  return {
-    videoId,
-    currentTime: Number(elPlayer.currentTime ?? 0) || 0,
-    wasPlaying: !elPlayer.paused,
-    playbackRate: Number(elPlayer.playbackRate ?? 1) || 1,
-    volume: Number(elPlayer.volume ?? 1) || 1,
-    muted: Boolean(elPlayer.muted)
-  };
-}
-
-/**
- * Apply time/volume once media can seek. Avoid multi-shot seeks that flash 0
- * and avoid starting play before can-play (mini-repeat of old buffer).
- */
-function applyPlayerSnapshot(
-  elPlayer: MediaPlayerEl,
-  companionAudio: CompanionAudioController,
-  snapshot: AdFreePlaybackSnapshot,
-  forcePause: boolean,
-  keepPlaying?: KeepPlayingController | null
+function persistSelected(
+  videoId: string,
+  payload: AdFreeStreamPayload,
+  qualityId: string
 ) {
-  const time = Math.max(0, snapshot.currentTime);
-
-  companionAudio.suspend();
-
-  try {
-    elPlayer.currentTime = time;
-  } catch {
-    // ignore until metadata
-  }
-
-  elPlayer.playbackRate = snapshot.playbackRate > 0 ? snapshot.playbackRate : 1;
-  elPlayer.volume = Math.min(1, Math.max(0, snapshot.volume));
-  elPlayer.muted = snapshot.muted;
-
-  if (forcePause || !snapshot.wasPlaying) {
-    keepPlaying?.setWantsPlaying(false);
-    if (keepPlaying) {
-      keepPlaying.allowPause(() => {
-        elPlayer.pause?.();
-      });
-    } else {
-      elPlayer.pause?.();
-    }
-    companionAudio.syncFromPlayer();
+  const quality = payload.qualities.find(item => item.id === qualityId);
+  if (!quality) {
     return;
   }
+  const nextPayload: AdFreeStreamPayload = {
+    ...payload,
+    ...deriveSelectedFields(quality),
+    qualities: payload.qualities,
+    captions: payload.captions,
+    storyboardSpec: payload.storyboardSpec,
+    chapters: payload.chapters ?? [],
+    resolvedAt: payload.resolvedAt
+  };
+  void browser.storage.session.set({
+    [adFreeStreamStorageKey(videoId)]: nextPayload
+  });
+}
 
-  // Wait for can-play / playing — do not play immediately after seek/source swap
-  keepPlaying?.setWantsPlaying(true);
-  void elPlayer.play?.().catch(() => {});
+function isBridgeToPlayer(data: unknown): data is AdFreeBridgeToPlayer {
+  return isBridgeMessage(data);
+}
+
+function wireBridge(
+  engine: PlaybackEngine,
+  videoId: string,
+  keepPlaying: KeepPlayingController | null
+) {
+  function handler(event: MessageEvent) {
+    if (event.source !== window.parent) {
+      return;
+    }
+    if (!isBridgeToPlayer(event.data)) {
+      return;
+    }
+    const message = event.data;
+    log.debug(`bridge ← ${message.action}`);
+
+    if (message.action === "ping") {
+      postToParent({ type: AD_FREE_BRIDGE_TYPE, action: "pong" });
+      return;
+    }
+
+    if (message.action === "get-state") {
+      postToParent({
+        type: AD_FREE_BRIDGE_TYPE,
+        action: "state",
+        requestId: message.requestId,
+        snapshot: engine.captureSnapshot(videoId)
+      });
+      return;
+    }
+
+    if (message.action === "pause") {
+      keepPlaying?.setWantsPlaying(false);
+      engine.pause();
+      return;
+    }
+
+    if (message.action === "set-state") {
+      if (!isValidSnapshot(message.snapshot) || message.snapshot.videoId !== videoId) {
+        log.warn("bridge set-state rejected snapshot");
+        return;
+      }
+      void (async () => {
+        await engine.applySnapshot(message.snapshot, message.forcePause);
+        if (message.forcePause || !message.snapshot.wasPlaying) {
+          keepPlaying?.setWantsPlaying(false);
+        } else {
+          keepPlaying?.setWantsPlaying(true);
+        }
+        postToParent({
+          type: AD_FREE_BRIDGE_TYPE,
+          action: "set-state-done",
+          requestId: message.requestId
+        });
+      })();
+    }
+  }
+
+  window.addEventListener("message", handler);
+  return function disposeBridge() {
+    window.removeEventListener("message", handler);
+  };
+}
+
+function createMediaPlayerElement(): MediaPlayerLike {
+  const element = document.createElement("media-player");
+  if (isMediaPlayerLike(element)) {
+    return element;
+  }
+  throw new Error("Failed to create media-player element");
 }
 
 function renderPlayer(
@@ -447,28 +250,28 @@ function renderPlayer(
     return;
   }
 
-  // Progressive first for default, then by height
-  const orderedQualities = [...qualities].sort((a, b) => {
-    if (a.isProgressive !== b.isProgressive) {
-      return a.isProgressive ? -1 : 1;
-    }
-    return (b.height ?? 0) - (a.height ?? 0);
-  });
+  // Adaptive dual-element cannot sustain 1080p+ (audio steals the pipe).
+  // Phase 1: avc1 adaptive uses MSE dual-track — allow all heights for those.
+  // Non-MSE adaptive (e.g. av01 without MSE path) still capped at 720p.
+  const playableQualities = qualities.filter(item =>
+    item.isProgressive
+    || qualitySupportsMse(item)
+    || (item.height ?? 0) <= 720
+  );
+  const orderedForMenu = orderQualitiesForMenu(
+    playableQualities.length > 0 ? playableQualities : qualities
+  );
+  // Prefer MSE default over stored progressive (session often still has p-18 selected)
+  const preferredDefault = pickDefaultQuality(orderedForMenu);
+  const stored = orderedForMenu.find(item => item.id === payload.selectedQualityId);
+  const initialQuality = stored && qualitySupportsMse(stored)
+    ? stored
+    : preferredDefault ?? stored ?? orderedForMenu[0];
 
-  let activeQuality = orderedQualities.find(q => q.id === payload.selectedQualityId)
-    ?? orderedQualities.find(q => q.isProgressive)
-    ?? orderedQualities[0];
-
-  const allSources = buildQualitySources(orderedQualities, activeQuality.id);
-  if (allSources.length === 0) {
+  if (!/^https?:\/\//i.test(initialQuality.videoUrl)) {
     renderError(elContainer, "No valid stream URLs found");
     return;
   }
-
-  const bySrc = new Map(orderedQualities.map(q => [q.videoUrl, q]));
-  const byId = new Map(orderedQualities.map(q => [q.id, q]));
-
-  const keepPlaying = isEmbed ? installKeepPlaying() : null;
 
   if (isEmbed) {
     document.documentElement.classList.add("is-embed");
@@ -484,414 +287,367 @@ function renderPlayer(
   const elPlayerWrap = document.createElement("div");
   elPlayerWrap.id = "player-wrap";
 
-  const elPlayer = document.createElement("media-player") as MediaPlayerEl;
-  elPlayer.setAttribute("title", payload.title);
+  const elPlayer = createMediaPlayerElement();
+  // When chapters exist, leave title empty so Vidstack default layout shows
+  // media-chapter-title (current chapter) next to volume instead of the full video name.
+  const hasChapters = (payload.chapters?.length ?? 0) >= 2;
+  if (hasChapters) {
+    elPlayer.removeAttribute("title");
+  } else {
+    elPlayer.setAttribute("title", payload.title);
+  }
   elPlayer.setAttribute("artist", payload.author);
   elPlayer.setAttribute("poster", youtubeThumbnailUrl(videoId));
   elPlayer.setAttribute("playsinline", "");
-  if (!startPaused && initialTime <= 0) {
-    elPlayer.setAttribute("autoplay", "");
-  }
   elPlayer.setAttribute("view-type", "video");
   elPlayer.setAttribute("stream-type", "on-demand");
   elPlayer.setAttribute("load", "eager");
-  elPlayer.setAttribute("preload", "metadata");
+  // Prefer auto so mid-video seeks (1h+) buffer more aggressively at resume point
+  elPlayer.setAttribute("preload", "auto");
+  elPlayer.setAttribute("aria-label", payload.title || "Video player");
 
   const elProvider = document.createElement("media-provider");
   appendCaptionTracks(elProvider, payload.captions ?? []);
+  const chapterBlobUrl = appendChapterTrack(
+    elProvider,
+    payload.chapters ?? [],
+    payload.durationSeconds > 0 ? payload.durationSeconds : 0
+  );
+  if (chapterBlobUrl) {
+    log.info("chapters track ready", {
+      count: payload.chapters?.length ?? 0,
+      first: payload.chapters?.[0]?.title?.slice(0, 60)
+    });
+  } else {
+    log.debug("no chapters — continuous progress bar");
+  }
+
   const elLayout = document.createElement("media-video-layout");
+  // Always show chapter segments when a chapters track is present (embed can be narrow).
+  (elLayout as HTMLElement & { sliderChaptersMinWidth?: number }).sliderChaptersMinWidth = 0;
+  // YouTube storyboard sprites → scrubber hover preview (not a single poster frame)
+  const storyboardThumbs = buildStoryboardThumbs({
+    spec: payload.storyboardSpec,
+    durationSeconds: payload.durationSeconds > 0 ? payload.durationSeconds : 0
+  });
+  if (storyboardThumbs.length > 0) {
+    // Vidstack DefaultLayout accepts ThumbnailImageInit[]
+    (elLayout as HTMLElement & { thumbnails?: unknown }).thumbnails = storyboardThumbs;
+    log.info("storyboard thumbs ready", {
+      frames: storyboardThumbs.length,
+      firstUrl: storyboardThumbs[0]?.url?.slice(0, 80)
+    });
+  } else {
+    log.debug("no storyboard spec — scrubber preview unavailable");
+  }
   elPlayer.append(elProvider, elLayout);
   elPlayerWrap.append(elPlayer);
 
-  const companionAudio = createCompanionAudio(elPlayer, elPlayerWrap);
+  // Revoke chapter VTT blob when the player page unloads
+  if (chapterBlobUrl) {
+    window.addEventListener(
+      "pagehide",
+      () => {
+        try {
+          URL.revokeObjectURL(chapterBlobUrl);
+        } catch {
+          // ignore
+        }
+      },
+      { once: true }
+    );
+  }
 
-  let isSettled = false;
-  let isReloading = false;
-  let lastKnownGoodTime = Math.max(0, initialTime);
-  let loadTimeoutId = 0;
-  let pendingSnapshot: {
-    snapshot: AdFreePlaybackSnapshot;
-    forcePause: boolean;
-    requestId?: string;
-  } | null = null;
-  let hasAnnouncedReady = false;
+  // Minimal single-ring loader (Vidstack native spinner is CSS-hidden)
+  const elLoader = document.createElement("div");
+  elLoader.className = "ytdl-loader";
+  elLoader.setAttribute("aria-hidden", "true");
+  elLoader.innerHTML = "<div class=\"ytdl-loader-ring\" role=\"presentation\"></div>";
+  elPlayerWrap.append(elLoader);
 
-  const clearLoadTimeout = () => {
-    if (loadTimeoutId) {
-      window.clearTimeout(loadTimeoutId);
-      loadTimeoutId = 0;
-    }
+  let engine: PlaybackEngine | null = null;
+
+  const keepPlaying = isEmbed
+    ? installKeepPlaying({
+      isSafeToResume: () => engine?.isSafeToResume() ?? false,
+      onForceResume() {
+        void engine?.play();
+      }
+    })
+    : null;
+
+  const qualityMenuHolder: { current: ReturnType<typeof createQualityMenu> | null } = {
+    current: null
   };
 
-  const armLoadTimeout = () => {
-    clearLoadTimeout();
-    loadTimeoutId = window.setTimeout(() => {
-      if (isSettled) {
+  engine = createPlaybackEngine({
+    elPlayer,
+    elMount: elPlayerWrap,
+    initialQuality,
+    durationSeconds: payload.durationSeconds > 0 ? payload.durationSeconds : undefined,
+    allowPause: keepPlaying
+      ? run => keepPlaying.allowPause(run)
+      : undefined,
+    onStateChange(state) {
+      const busy = state === "loading" || state === "switching" || state === "seeking";
+      elPlayerWrap.classList.toggle("is-buffering", busy);
+      elPlayerWrap.dataset.engineState = state;
+      elLoader.setAttribute("aria-hidden", busy ? "false" : "true");
+    },
+    onQualityChange(quality) {
+      qualityMenuHolder.current?.setSelected(quality.id);
+      persistSelected(videoId, payload, quality.id);
+      const elBadge = document.getElementById("quality-badge");
+      if (elBadge) {
+        elBadge.textContent = quality.label;
+      }
+    },
+    onError(message) {
+      log.error("engine error", { message });
+      elPlayerWrap.classList.remove("is-buffering");
+      renderError(elContainer, message);
+    }
+  });
+
+  const qualityMenu = createQualityMenu(
+    orderedForMenu,
+    initialQuality.id,
+    quality => {
+      if (!engine) {
         return;
       }
-      renderError(
-        elContainer,
-        "Stream is taking too long to start. Toggle Ad-Free off/on, or try another video."
-      );
-    }, CAN_PLAY_TIMEOUT_MS);
-  };
+      const resumeAt = engine.getLastKnownGoodTime() > 0
+        ? engine.getLastKnownGoodTime()
+        : Number(elPlayer.currentTime ?? 0) || 0;
+      // YouTube always continues after quality change — pausing first then switching
+      // used to load with minAhead=0.6 and underrun immediately on play.
+      const wasPlaying = true;
+      log.info("quality menu select", {
+        id: quality.id,
+        label: quality.label,
+        resumeAt,
+        wasPlaying,
+        busy: engine.isBusy()
+      });
+      void engine.loadQuality(quality, { resumeAt, wasPlaying });
+    }
+  );
+  qualityMenuHolder.current = qualityMenu;
+  elPlayerWrap.append(qualityMenu.root);
 
-  const persistSelected = (quality: AdFreeQualityOption) => {
-    const elBadge = document.getElementById("quality-badge");
-    if (elBadge) {
-      elBadge.textContent = quality.label;
-    }
-    const nextPayload: AdFreeStreamPayload = {
-      ...payload,
-      selectedQualityId: quality.id,
-      qualityLabel: quality.label,
-      progressiveUrl: quality.isProgressive ? quality.videoUrl : null,
-      videoUrl: quality.isProgressive ? null : quality.videoUrl,
-      audioUrl: quality.audioUrl
-    };
-    void browser.storage.session.set({
-      [adFreeStreamStorageKey(videoId)]: nextPayload
-    });
-  };
-
-  const resolveQualityFromPlayer = (): AdFreeQualityOption | null => {
-    const current = elPlayer.quality;
-    if (current?.id) {
-      const byQualityId = byId.get(String(current.id));
-      if (byQualityId) {
-        return byQualityId;
-      }
-    }
-    if (current?.src && typeof current.src === "string") {
-      return bySrc.get(current.src) ?? null;
-    }
-    if (typeof current?.height === "number") {
-      const match = orderedQualities.find(q => q.height === current.height);
-      if (match) {
-        return match;
-      }
-    }
-    return activeQuality;
-  };
+  // Settings menu: "Always Ad-Free" checkbox (persists to extension options)
+  const defaultMenuItem = installDefaultMenuItem(elPlayer as unknown as HTMLElement);
 
   /**
-   * Multi-src list for Vidstack Settings → Quality UI.
-   * Preferred rendition first so only it starts buffering.
-   * On switch we re-order + soft reload and wait for can-play before play.
+   * Chapters menu: close root menu after picking a chapter (Vidstack keeps it open by default).
    */
-  const loadQualities = (
-    preferred: AdFreeQualityOption,
-    resumeAt: number,
-    wasPlaying: boolean
-  ) => {
-    const sources = buildQualitySources(orderedQualities, preferred.id);
-    if (sources.length === 0) {
+  elPlayer.addEventListener("change", event => {
+    const target = event.target;
+    if (!(target instanceof Element)) {
       return;
     }
-
-    isReloading = true;
-    companionAudio.suspend();
-    keepPlaying?.allowPause(() => {
-      try {
-        elPlayer.pause?.();
-      } catch {
-        // ignore
-      }
-    });
-
-    // Soft replace: do NOT assign src="" (that zeros the timeline UI).
-    // Dispose companion audio fully; reset only provider <video> buffers.
-    companionAudio.setQuality(preferred);
-    for (const el of elPlayer.querySelectorAll("video")) {
-      const elVideo = el as HTMLVideoElement;
-      try {
-        elVideo.pause();
-      } catch {
-        // ignore
-      }
-    }
-
-    elPlayer.src = sources.length === 1 ? sources[0] : sources;
-    activeQuality = preferred;
-    persistSelected(preferred);
-
-    pendingSnapshot = {
-      snapshot: {
-        videoId,
-        currentTime: Math.max(0, resumeAt),
-        wasPlaying,
-        playbackRate: Number(elPlayer.playbackRate ?? 1) || 1,
-        volume: Number(elPlayer.volume ?? 1) || 1,
-        muted: Boolean(elPlayer.muted)
-      },
-      // Never play until can-play applied the resume time (prevents mini-repeat)
-      forcePause: true
-    };
-    // Store intent to resume after ready
-    if (wasPlaying) {
-      pendingSnapshot.snapshot.wasPlaying = true;
-      // forcePause stays true until can-play, then we play if wasPlaying
-    }
-
-    isSettled = false;
-    armLoadTimeout();
-    queueMicrotask(() => {
-      try {
-        elPlayer.startLoading?.();
-      } catch {
-        // ignore
-      }
-    });
-  };
-
-  // Track time only when not mid-reload (avoids writing 0 into lastKnownGoodTime)
-  elPlayer.addEventListener("time-update", () => {
-    if (isReloading) {
+    if (!target.matches("media-chapters-radio-group, .vds-chapters-radio-group")) {
       return;
     }
-    const t = Number(elPlayer.currentTime ?? 0);
-    if (Number.isFinite(t) && t > 0) {
-      lastKnownGoodTime = t;
-    }
-  });
-
-  let lastUserInputAt = 0;
-  const USER_PAUSE_GESTURE_MS = 1_000;
-  const markUserInput = () => {
-    lastUserInputAt = Date.now();
-  };
-
-  elPlayer.addEventListener("play", () => {
-    keepPlaying?.setWantsPlaying(true);
-  });
-  elPlayer.addEventListener("playing", () => {
-    keepPlaying?.setWantsPlaying(true);
-    if (!isReloading) {
-      companionAudio.releaseWhenPlaying();
-    }
-  });
-  elPlayer.addEventListener("ended", () => {
-    keepPlaying?.setWantsPlaying(false);
-  });
-  elPlayer.addEventListener("pause", () => {
-    if (!keepPlaying) {
+    const elMenu = target.closest("media-menu");
+    if (!elMenu) {
       return;
     }
-    if (Date.now() - lastUserInputAt <= USER_PAUSE_GESTURE_MS) {
-      keepPlaying.setWantsPlaying(false);
+    const closer = elMenu as HTMLElement & { close?: (trigger?: Event) => void };
+    if (typeof closer.close === "function") {
+      closer.close(event);
     }
-  });
+  }, true);
 
-  elPlayer.addEventListener(
-    "pointerdown",
-    event => {
-      const target = event.target as Element | null;
-      if (!target) {
-        return;
-      }
-      if (
-        target.closest(
-          "media-menu, media-menu-button, media-menu-items, media-menu-portal, "
-          + "media-time-slider, media-volume-slider, media-slider, "
-          + ".vds-slider, .vds-menu, .vds-menu-items, input, select, textarea"
-        )
-      ) {
-        return;
-      }
-      markUserInput();
-    },
-    true
-  );
-  elPlayer.addEventListener(
-    "keydown",
-    event => {
-      if (
-        event.key === " "
-        || event.key === "k"
-        || event.key === "K"
-        || event.key === "MediaPlayPause"
-      ) {
-        markUserInput();
-      }
-    },
-    true
-  );
-
-  const flushPendingSnapshot = () => {
-    if (!pendingSnapshot) {
-      return;
-    }
-    const { snapshot, requestId } = pendingSnapshot;
-    const shouldPlay = snapshot.wasPlaying;
-    pendingSnapshot = null;
-    isReloading = false;
-
-    // Apply time first while still paused
-    applyPlayerSnapshot(
-      elPlayer,
-      companionAudio,
-      {
-        ...snapshot,
-        wasPlaying: false
-      },
-      true,
-      keepPlaying
-    );
-
-    // Only then start playback — stream is ready at resumeAt
-    if (shouldPlay) {
-      keepPlaying?.setWantsPlaying(true);
-      void elPlayer.play?.().catch(() => {});
-    }
-
-    if (requestId || isEmbed) {
-      postToParent({
-        type: AD_FREE_BRIDGE_TYPE,
-        action: "set-state-done",
-        requestId
-      });
-    }
-  };
-
-  elPlayer.addEventListener("loaded-metadata", () => {
-    // Restore timeline ASAP so the scrubber does not sit at 0
-    const pendingTime = pendingSnapshot?.snapshot.currentTime;
-    const time = pendingTime ?? (isReloading ? lastKnownGoodTime : null);
-    if (time != null && time > 0) {
-      try {
-        elPlayer.currentTime = time;
-      } catch {
-        // ignore
-      }
-    }
-  });
-
-  elPlayer.addEventListener("can-play", () => {
-    isSettled = true;
-    clearLoadTimeout();
-    flushPendingSnapshot();
-    if (isEmbed && !hasAnnouncedReady) {
-      hasAnnouncedReady = true;
-      postToParent({
-        type: AD_FREE_BRIDGE_TYPE,
-        action: "ready",
-        videoId
-      });
-    }
-  });
-
-  // Vidstack Settings → Quality (multi-src list).
-  // On user quality pick we do a controlled soft reload and only resume after can-play.
-  elPlayer.addEventListener("quality-change", () => {
-    const quality = resolveQualityFromPlayer();
-    if (!quality) {
-      return;
-    }
-
-    // Ignore events fired while we are already reloading sources
-    if (isReloading) {
-      activeQuality = quality;
-      persistSelected(quality);
-      return;
-    }
-
-    if (quality.id === activeQuality.id) {
-      return;
-    }
-
-    const resumeAt = lastKnownGoodTime > 0
-      ? lastKnownGoodTime
-      : Number(elPlayer.currentTime ?? 0) || 0;
-    const wasPlaying = !elPlayer.paused || Boolean(keepPlaying?.getWantsPlaying());
-    loadQualities(quality, resumeAt, wasPlaying);
-  });
-
-  elPlayer.addEventListener("error", (event: Event) => {
-    const detail = (event as CustomEvent<{ message?: string }>).detail;
-    const detailMessage = detail && typeof detail === "object" && "message" in detail
-      ? String(detail.message)
-      : "";
-    isSettled = true;
-    isReloading = false;
-    clearLoadTimeout();
-    renderError(
-      elContainer,
-      detailMessage
-        || "Media error. Toggle Ad-Free off/on — stream URL may have expired."
-    );
-  });
-
+  // Mirror controls idle → parent (Ad-Free chip) + close quality dropdown when chrome hides
   if (isEmbed) {
-    window.addEventListener("message", (event: MessageEvent) => {
-      if (!isBridgeMessage(event.data)) {
-        return;
-      }
-      const message = event.data as AdFreeBridgeToPlayer;
-
-      if (message.action === "ping") {
-        postToParent({ type: AD_FREE_BRIDGE_TYPE, action: "pong" });
-        return;
-      }
-
-      if (message.action === "get-state") {
-        const snap = capturePlayerSnapshot(elPlayer, videoId);
-        if (isReloading && lastKnownGoodTime > 0) {
-          snap.currentTime = lastKnownGoodTime;
-        }
-        postToParent({
-          type: AD_FREE_BRIDGE_TYPE,
-          action: "state",
-          requestId: message.requestId,
-          snapshot: snap
-        });
-        return;
-      }
-
-      if (message.action === "pause") {
-        keepPlaying?.setWantsPlaying(false);
-        keepPlaying?.allowPause(() => {
-          elPlayer.pause?.();
-        });
-        companionAudio.syncFromPlayer();
-        return;
-      }
-
-      if (message.action === "set-state") {
-        if (!isValidSnapshot(message.snapshot) || message.snapshot.videoId !== videoId) {
-          return;
-        }
-        lastKnownGoodTime = Math.max(lastKnownGoodTime, message.snapshot.currentTime);
-        if (!isSettled || isReloading) {
-          pendingSnapshot = {
-            snapshot: message.snapshot,
-            forcePause: message.forcePause,
-            requestId: message.requestId
-          };
-          return;
-        }
-        applyPlayerSnapshot(
-          elPlayer,
-          companionAudio,
-          message.snapshot,
-          message.forcePause,
-          keepPlaying
-        );
-        postToParent({
-          type: AD_FREE_BRIDGE_TYPE,
-          action: "set-state-done",
-          requestId: message.requestId
-        });
+    elPlayer.addEventListener("controls-change", event => {
+      const detail = (event as CustomEvent<boolean>).detail;
+      const visible = typeof detail === "boolean"
+        ? detail
+        : (elPlayer as HTMLElement).hasAttribute("data-controls");
+      postToParent({
+        type: AD_FREE_BRIDGE_TYPE,
+        action: "controls-visible",
+        visible
+      });
+      if (!visible) {
+        qualityMenu.close();
       }
     });
   }
 
-  // Initial load — multi-src for Settings quality menu; preferred first
-  companionAudio.suspend();
-  loadQualities(
-    activeQuality,
-    initialTime,
-    !startPaused && initialTime <= 0
-  );
+  let lastUserInputAt = 0;
+  /**
+   * Until this timestamp, treat play/playing as accidental (grace re-play / keep-playing)
+   * and force-pause. Set by media-pause-request / gesture before the actual pause event.
+   */
+  let intentionalPauseUntil = 0;
+  const INTENTIONAL_PAUSE_HOLD_MS = 2_000;
+
+  function markUserInput() {
+    lastUserInputAt = Date.now();
+  }
+
+  function isFromTimeSlider(event: Event): boolean {
+    const path = typeof event.composedPath === "function" ? event.composedPath() : [];
+    for (const node of path) {
+      if (!(node instanceof Element)) {
+        continue;
+      }
+      if (node.matches(
+        "media-time-slider, .vds-time-slider, media-volume-slider, .vds-volume-slider, "
+        + "media-slider.vds-time-slider, [data-media-slider-type=\"time\"]"
+      )) {
+        return true;
+      }
+    }
+    const target = event.target;
+    if (target instanceof Element) {
+      return Boolean(target.closest(
+        "media-time-slider, .vds-time-slider, media-volume-slider, .vds-volume-slider"
+      ));
+    }
+    return false;
+  }
+
+  function applyIntentionalPause(source: string) {
+    if (!engine) {
+      return;
+    }
+    if (engine.isBusy()) {
+      log.debug(`intentional pause ignored — busy (${source})`);
+      return;
+    }
+    intentionalPauseUntil = Date.now() + INTENTIONAL_PAUSE_HOLD_MS;
+    markUserInput();
+    log.debug(`intentional pause → engine.pause() (${source})`);
+    engine.pause();
+    keepPlaying?.setWantsPlaying(false);
+  }
+
+  function applyIntentionalPlay(source: string) {
+    if (!engine) {
+      return;
+    }
+    intentionalPauseUntil = 0;
+    markUserInput();
+    log.debug(`intentional play (${source})`);
+    keepPlaying?.setWantsPlaying(true);
+    engine.setWantsPlaying(true);
+  }
+
+  /**
+   * Vidstack fires these BEFORE the media element pauses/plays — from gesture
+   * (click on video), play button, and keyboard. Time-slider also emits them
+   * during scrub; those must NOT clear wantsPlaying.
+   */
+  elPlayer.addEventListener("media-pause-request", event => {
+    if (isFromTimeSlider(event)) {
+      log.debug("media-pause-request from scrub — keep intent");
+      return;
+    }
+    applyIntentionalPause("media-pause-request");
+  }, true);
+
+  elPlayer.addEventListener("media-play-request", event => {
+    if (isFromTimeSlider(event)) {
+      log.debug("media-play-request from scrub — engine owns resume");
+      return;
+    }
+    applyIntentionalPlay("media-play-request");
+  }, true);
+
+  elPlayer.addEventListener("play", () => {
+    if (engine?.isBusy()) {
+      return;
+    }
+    // Ghost play right after intentional pause (grace re-play / keep-playing race)
+    if (Date.now() < intentionalPauseUntil) {
+      log.debug("play blocked — intentional pause window");
+      engine?.pause();
+      keepPlaying?.setWantsPlaying(false);
+      return;
+    }
+    keepPlaying?.setWantsPlaying(true);
+    engine?.setWantsPlaying(true);
+  });
+  elPlayer.addEventListener("playing", () => {
+    if (engine?.isBusy()) {
+      return;
+    }
+    if (Date.now() < intentionalPauseUntil) {
+      log.debug("playing blocked — intentional pause window");
+      engine?.pause();
+      keepPlaying?.setWantsPlaying(false);
+      return;
+    }
+    keepPlaying?.setWantsPlaying(true);
+    engine?.setWantsPlaying(true);
+  });
+  elPlayer.addEventListener("ended", () => {
+    intentionalPauseUntil = 0;
+    keepPlaying?.setWantsPlaying(false);
+    engine?.setWantsPlaying(false);
+  });
+
+  // Fallback: if pause arrives without media-pause-request (some providers),
+  // still honour a recent non-scrub pointer gesture.
+  let lastSurfacePointerAt = 0;
+  elPlayer.addEventListener("pause", () => {
+    if (!engine || engine.isBusy()) {
+      return;
+    }
+    if (Date.now() < intentionalPauseUntil) {
+      // Already handled via media-pause-request
+      engine.pause();
+      keepPlaying?.setWantsPlaying(false);
+      return;
+    }
+    if (Date.now() - lastSurfacePointerAt <= 400) {
+      applyIntentionalPause("pause+surface-pointer");
+    }
+  }, true);
+
+  function onSurfacePointer(event: Event) {
+    const target = event.target;
+    if (!(target instanceof Element)) {
+      return;
+    }
+    // Scrub / volume / menus / non-play chrome — not a play/pause toggle
+    if (target.closest(
+      "media-menu, media-menu-button, media-menu-items, media-menu-portal, "
+      + "media-time-slider, media-volume-slider, media-slider, "
+      + ".vds-slider, .vds-time-slider, .vds-volume-slider, .vds-menu, .vds-menu-items, "
+      + ".quality-menu, input, select, textarea, "
+      + "media-mute-button, media-fullscreen-button, media-pip-button, "
+      + "media-caption-button, media-live-button, media-seek-button, "
+      + ".vds-mute-button, .vds-fullscreen-button, .vds-pip-button, "
+      + ".vds-caption-button, .vds-settings-menu, .vds-google-cast-button, "
+      + ".vds-volume-popup, .vds-tooltip"
+    )) {
+      markUserInput();
+      return;
+    }
+    // Vidstack gesture uses pointerup on media-gesture for toggle:paused
+    lastSurfacePointerAt = Date.now();
+    markUserInput();
+  }
+  elPlayer.addEventListener("pointerdown", onSurfacePointer, true);
+  elPlayer.addEventListener("pointerup", onSurfacePointer, true);
+
+  elPlayer.addEventListener("keydown", event => {
+    if (event.key === " " || event.key === "k" || event.key === "K" || event.key === "MediaPlayPause") {
+      // media-pause-request / media-play-request will follow; pre-mark surface
+      lastSurfacePointerAt = Date.now();
+      markUserInput();
+    }
+  }, true);
+
+  let disposeBridge: (() => void) | null = null;
+  if (isEmbed && engine) {
+    disposeBridge = wireBridge(engine, videoId, keepPlaying);
+  }
 
   elShell.append(elPlayerWrap);
 
@@ -909,16 +665,18 @@ function renderPlayer(
     const elBadge = document.createElement("span");
     elBadge.id = "quality-badge";
     elBadge.className = "badge";
-    elBadge.textContent = activeQuality.label;
+    elBadge.textContent = initialQuality.label;
 
     const elHint = document.createElement("p");
     elHint.className = "quality-hint";
     const captionHint = (payload.captions?.length ?? 0) > 0
       ? ` · ${payload.captions.length} subtitle track(s)`
       : "";
-    elHint.textContent = orderedQualities.length > 1
-      ? `Settings ⚙ → Quality / Captions${captionHint}`
-      : `Settings ⚙ → Captions${captionHint}`;
+    const mseCount = orderedForMenu.filter(item => qualitySupportsMse(item)).length;
+    const mseHint = mseCount > 0 ? ` · MSE ${mseCount} adaptive` : "";
+    elHint.textContent = orderedForMenu.length > 1
+      ? `Quality menu (top-right) / Captions in Settings${captionHint}${mseHint}`
+      : `Settings ⚙ → Captions${captionHint}${mseHint}`;
 
     elMeta.append(elTitle, elChannel, elBadge, elHint);
     elShell.append(elMeta);
@@ -926,6 +684,37 @@ function renderPlayer(
   }
 
   elContainer.replaceChildren(elShell);
+
+  log.info("renderPlayer", {
+    videoId,
+    isEmbed,
+    initialTime,
+    startPaused,
+    quality: initialQuality.label,
+    qualityCount: orderedForMenu.length,
+    progressive: initialQuality.isProgressive,
+    storyboard: Boolean(payload.storyboardSpec),
+    chapters: payload.chapters?.length ?? 0
+  });
+
+  void engine.loadQuality(initialQuality, {
+    resumeAt: Math.max(0, initialTime),
+    wasPlaying: !startPaused && initialTime <= 0
+  }).then(() => {
+    if (isEmbed) {
+      log.info("ready → parent");
+      postToParent({ type: AD_FREE_BRIDGE_TYPE, action: "ready", videoId });
+    }
+  });
+
+  window.addEventListener("pagehide", () => {
+    log.info("pagehide dispose");
+    disposeBridge?.();
+    defaultMenuItem.dispose();
+    qualityMenu.dispose();
+    engine?.dispose();
+    keepPlaying?.dispose();
+  }, { once: true });
 }
 
 async function loadStoredPayload(videoId: string): Promise<AdFreeStreamPayload | null> {
@@ -955,6 +744,8 @@ async function init() {
   const initialTime = readInitialTime(params);
   const startPaused = params.get("paused") === "1" || isEmbed;
 
+  log.info("init", { videoId, isEmbed, initialTime, startPaused });
+
   if (!videoId) {
     renderError(elApp, "No video ID provided.");
     return;
@@ -964,6 +755,18 @@ async function init() {
 
   try {
     const payload = await resolvePayload(videoId);
+    log.info("payload", {
+      title: payload.title,
+      qualities: payload.qualities.map(item => ({
+        id: item.id,
+        label: item.label,
+        progressive: item.isProgressive,
+        height: item.height
+      })),
+      selected: payload.selectedQualityId,
+      captions: payload.captions.length,
+      storyboard: Boolean(payload.storyboardSpec)
+    });
     renderPlayer(elApp, payload, videoId, {
       isEmbed,
       initialTime,
@@ -971,6 +774,7 @@ async function init() {
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
+    log.error("init failed", { message });
     renderError(
       elApp,
       `${message}\n\nToggle Ad-Free again on the YouTube watch page.`

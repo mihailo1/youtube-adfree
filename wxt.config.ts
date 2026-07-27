@@ -48,7 +48,7 @@ export default defineConfig({
     },
     web_accessible_resources: [
       {
-        resources: ["offscreen.html", "ad-free-player.html"],
+        resources: ["offscreen.html", "ad-free-player.html", "mse-spike.html"],
         matches: ["https://www.youtube.com/*", "https://youtube.com/*", "<all_urls>"]
       }
     ],

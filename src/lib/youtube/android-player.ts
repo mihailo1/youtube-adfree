@@ -59,6 +59,15 @@ export type AndroidPlayerResponse = Prettify<{
       captionTracks?: AndroidCaptionTrack[];
     };
   };
+  /**
+   * Scrubber storyboard sprites (same as WEB playerResponse.storyboards).
+   * Spec format: baseUrl|$L0|$L1|… — see `lib/ad-free/storyboard.ts`.
+   */
+  storyboards?: {
+    playerStoryboardSpecRenderer?: { spec?: string };
+    playerLiveStoryboardSpecRenderer?: { spec?: string };
+  };
+  playerStoryboardSpecRenderer?: { spec?: string };
 }>;
 
 type FetchFn = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;

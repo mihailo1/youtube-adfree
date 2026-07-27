@@ -1,5 +1,4 @@
 import { createPageProxyFetch } from "../download/page-proxy-fetch";
-import { fetchChannelVideosWithGl } from "@/lib/ad-free/channel-region-list";
 import { AD_FREE_VISITOR_DATA_KEY } from "@/lib/ad-free/constants";
 import {
   type AdFreeStreamPayload,
@@ -8,26 +7,47 @@ import {
 } from "@/lib/ad-free/resolve-stream";
 import { MessageType, onMessage } from "@/lib/messaging/messaging";
 
-async function findYouTubeTabId(preferredTabId?: number): Promise<number | null> {
+const RECEIVING_END_HINT =
+  "Content script not loaded on YouTube tab. Open https://www.youtube.com/watch?v=… and hard-refresh (Cmd+Shift+R) after reloading the extension.";
+
+function isReceivingEndMissing(message: string): boolean {
+  return message.includes("Receiving end does not exist")
+    || message.includes("Could not establish connection");
+}
+
+/** Ordered YouTube tab ids: preferred → active → rest (www only; matches content_scripts). */
+async function listYouTubeTabIds(preferredTabId?: number): Promise<number[]> {
+  const ids: number[] = [];
+  const seen = new Set<number>();
+
+  function pushId(tabId: number | undefined) {
+    if (tabId == null || seen.has(tabId)) {
+      return;
+    }
+    seen.add(tabId);
+    ids.push(tabId);
+  }
+
   if (preferredTabId != null && preferredTabId >= 0) {
     try {
       const tab = await browser.tabs.get(preferredTabId);
       if (tab.url?.includes("youtube.com")) {
-        return preferredTabId;
+        pushId(preferredTabId);
       }
     } catch {
       // tab may be gone
     }
   }
 
-  const tabs = await browser.tabs.query({ url: ["*://www.youtube.com/*", "*://youtube.com/*"] });
+  // Content scripts match only https://www.youtube.com/*
+  const tabs = await browser.tabs.query({ url: ["*://www.youtube.com/*"] });
   const active = tabs.find(tab => tab.active && tab.id != null);
-  if (active?.id != null) {
-    return active.id;
+  pushId(active?.id);
+  for (const tab of tabs) {
+    pushId(tab.id);
   }
 
-  const first = tabs.find(tab => tab.id != null);
-  return first?.id ?? null;
+  return ids;
 }
 
 async function getStoredVisitorData(): Promise<string | undefined> {
@@ -40,22 +60,35 @@ async function resolveAdFreeStream(
   videoId: string,
   preferredTabId?: number
 ): Promise<AdFreeStreamPayload> {
-  const youtubeTabId = await findYouTubeTabId(preferredTabId);
+  const youtubeTabIds = await listYouTubeTabIds(preferredTabId);
   const errors: string[] = [];
 
-  // 1) Prefer page-proxy: real cookies + ytcfg.VISITOR_DATA substitution (avoids 403)
-  if (youtubeTabId != null) {
-    try {
-      const pageProxyFetch = createPageProxyFetch(youtubeTabId);
-      return await resolveAdFreeStreamFromPlayerApi({
-        videoId,
-        customFetch: pageProxyFetch
-      });
-    } catch (error) {
-      errors.push(`page-proxy: ${error instanceof Error ? error.message : String(error)}`);
-    }
+  // 1) Prefer page-proxy: real cookies + ytcfg.VISITOR_DATA substitution (avoids 403).
+  // Try every www.youtube.com tab — after extension reload only refreshed tabs have CS.
+  if (youtubeTabIds.length === 0) {
+    errors.push("page-proxy: no www.youtube.com tab open");
   } else {
-    errors.push("page-proxy: no YouTube tab open");
+    let anyReceivingEndMissing = false;
+    for (const tabId of youtubeTabIds) {
+      try {
+        const pageProxyFetch = createPageProxyFetch(tabId);
+        return await resolveAdFreeStreamFromPlayerApi({
+          videoId,
+          customFetch: pageProxyFetch
+        });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (isReceivingEndMissing(message)) {
+          anyReceivingEndMissing = true;
+          errors.push(`page-proxy tab ${tabId}: no content script`);
+          continue;
+        }
+        errors.push(`page-proxy tab ${tabId}: ${message}`);
+      }
+    }
+    if (anyReceivingEndMissing) {
+      errors.push(RECEIVING_END_HINT);
+    }
   }
 
   // 2) Direct BG fetch with stored visitorData (often still 403 on Chrome)
@@ -70,7 +103,7 @@ async function resolveAdFreeStream(
   }
 
   throw new Error(
-    `Could not resolve stream. Keep a YouTube watch tab open and try again. (${errors.join(" | ")})`
+    `Could not resolve stream. Keep a refreshed YouTube watch tab open and try again. (${errors.join(" | ")})`
   );
 }
 
@@ -92,38 +125,9 @@ export function registerAdFreeHandlers() {
     await storeStreamPayload(payload);
   });
 
-  onMessage(MessageType.ResolveChannelRegionList, async ({ data, sender }) => {
-    const youtubeTabId = await findYouTubeTabId(sender.tab?.id);
-    const gl = data.gl ?? "JO";
-    const tab = data.tab ?? "videos";
-    const errors: string[] = [];
-
-    if (youtubeTabId != null) {
-      try {
-        const pageProxyFetch = createPageProxyFetch(youtubeTabId);
-        return await fetchChannelVideosWithGl({
-          channelId: data.channelId,
-          gl,
-          tab,
-          customFetch: pageProxyFetch
-        });
-      } catch (error) {
-        errors.push(`page-proxy: ${error instanceof Error ? error.message : String(error)}`);
-      }
-    } else {
-      errors.push("page-proxy: no YouTube tab open");
-    }
-
-    try {
-      return await fetchChannelVideosWithGl({
-        channelId: data.channelId,
-        gl,
-        tab
-      });
-    } catch (error) {
-      errors.push(`background: ${error instanceof Error ? error.message : String(error)}`);
-    }
-
-    throw new Error(`Could not load channel list (${errors.join(" | ")})`);
+  // Content scripts cannot always write chrome.storage.session directly
+  // (needs setAccessLevel). Prefer this path for page-side merges.
+  onMessage(MessageType.StoreAdFreeStreamPayload, async ({ data }) => {
+    await storeStreamPayload(data.payload);
   });
 }

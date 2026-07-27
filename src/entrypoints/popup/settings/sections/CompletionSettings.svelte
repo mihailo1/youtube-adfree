@@ -100,6 +100,36 @@
       </span>
     </div>
   </label>
+  <label class="set-item set-item-label">
+    <div class="set-lead accent">
+      {@html playArrowIcon}
+    </div>
+    <div class="set-txt">
+      <span class="set-label">Always use Ad-Free player</span>
+      <span class="set-sub">Open watch pages in Ad-Free by default</span>
+    </div>
+    <div class="set-trail">
+      <span class="set-switch">
+        <input
+          class="set-switch-input"
+          checked={options.isAdFreeDefault ?? false}
+          onchange={e => {
+            if (!(e.target instanceof HTMLInputElement)) {
+              return;
+            }
+
+            void setOption({
+              key: "isAdFreeDefault",
+              value: e.target.checked
+            });
+          }}
+          role="switch"
+          type="checkbox"
+        />
+        <span class="set-switch-track"></span>
+      </span>
+    </div>
+  </label>
 </SettingsGroup>
 
 <style>
@@ -148,6 +178,12 @@
     color: var(--fg);
     font-weight: 500;
     font-size: 0.84375rem;
+  }
+
+  .set-sub {
+    color: var(--fg-muted);
+    font-size: 0.75rem;
+    line-height: 1.3;
   }
 
   .set-trail {

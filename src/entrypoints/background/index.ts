@@ -20,7 +20,30 @@ import {
 import { registerUpdateCheck } from "@/lib/updates/update-check";
 import { onSabrBodyCaptured, startSabrRequestCapture } from "@/lib/youtube/sabr/request-capture";
 
+/**
+ * chrome.storage.session is TRUSTED_CONTEXTS-only by default, so content scripts
+ * throw "Access to storage is not allowed from this context" on get/set.
+ * Ad-free watch + player share the stream payload via session storage.
+ */
+async function allowSessionStorageForContentScripts() {
+  try {
+    const session = browser.storage.session as typeof browser.storage.session & {
+      setAccessLevel?: (accessLevel: { accessLevel: string }) => Promise<void>;
+    };
+    if (typeof session.setAccessLevel !== "function") {
+      return;
+    }
+    await session.setAccessLevel({
+      accessLevel: "TRUSTED_AND_UNTRUSTED_CONTEXTS"
+    });
+  } catch {
+    // Older browsers / Firefox without session access levels — ignore
+  }
+}
+
 export default defineBackground(() => {
+  void allowSessionStorageForContentScripts();
+
   initOffscreenPortListener();
   startSabrRequestCapture();
   onSabrBodyCaptured(tabId => {
@@ -41,6 +64,8 @@ export default defineBackground(() => {
   registerUpdateCheck();
 
   browser.runtime.onInstalled.addListener(async ({ reason }) => {
+    // Re-apply after update/reload of the extension
+    await allowSessionStorageForContentScripts();
     if (reason !== browser.runtime.OnInstalledReason.INSTALL) {
       return;
     }

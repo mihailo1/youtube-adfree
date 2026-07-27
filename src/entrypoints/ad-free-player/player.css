@@ -53,56 +53,139 @@ body.is-embed #app {
   width: 100%;
   background: #000;
   aspect-ratio: 16 / 9;
+  /* YouTube watch player corners (~12px); square in fullscreen */
+  border-radius: var(--ytdl-player-radius, 12px);
+  overflow: hidden;
+  isolation: isolate;
 }
 
-/* Custom single-source quality picker (avoids multi-src buffer leaks) */
+body.is-embed #player-wrap {
+  border-radius: var(--ytdl-player-radius, 12px);
+}
+
+/* Fullscreen: no rounded corners (match YT) */
+#player-wrap:fullscreen,
+#player-wrap:-webkit-full-screen,
+media-player:fullscreen,
+media-player:-webkit-full-screen,
+media-player[data-fullscreen] {
+  --ytdl-player-radius: 0px;
+  border-radius: 0 !important;
+}
+
+/* Custom quality chip — visual twin of the Ad-Free toggle */
 .quality-menu {
   position: absolute;
-  top: 10px;
-  right: 10px;
+  top: 12px;
+  right: 12px;
   z-index: 20;
   pointer-events: auto;
+  opacity: 1;
+  visibility: visible;
+  transition: opacity 0.2s ease, visibility 0.2s ease;
+}
+
+/* Hide with Vidstack controls on cursor idle (same moment as bottom chrome) */
+#player-wrap media-player[data-started]:not([data-controls]) .quality-menu,
+#player-wrap media-player[data-started]:not([data-controls]) .quality-menu.is-open {
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
 }
 .quality-menu-button {
-  background: rgba(0, 0, 0, 0.72);
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  height: 32px;
+  background: rgba(15, 15, 15, 0.82);
   color: #fff;
-  border: 1px solid rgba(255, 255, 255, 0.18);
-  border-radius: 16px;
-  padding: 6px 12px;
-  font: 500 12px/1.2 "YouTube Sans", Roboto, Arial, sans-serif;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 999px;
+  padding: 0 10px 0 12px;
+  font: 600 12px/1 "YouTube Sans", Roboto, Arial, sans-serif;
+  letter-spacing: 0.01em;
   cursor: pointer;
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
+  transition: background 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
 }
 .quality-menu-button:hover {
-  background: rgba(40, 40, 40, 0.9);
+  background: rgba(40, 40, 40, 0.94);
+  border-color: rgba(255, 255, 255, 0.22);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.4);
+}
+.quality-menu.is-open .quality-menu-button {
+  background: rgba(255, 0, 51, 0.16);
+  border-color: rgba(255, 0, 51, 0.5);
+}
+.quality-menu-label {
+  white-space: nowrap;
+}
+.quality-menu-meta {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.55);
+  padding: 2px 6px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+}
+.quality-menu-chevron-wrap {
+  display: grid;
+  place-items: center;
+  color: rgba(255, 255, 255, 0.65);
+  transition: transform 0.15s ease;
+}
+.quality-menu.is-open .quality-menu-chevron-wrap {
+  transform: rotate(180deg);
+  color: #fff;
 }
 .quality-menu-list {
   position: absolute;
-  top: calc(100% + 6px);
+  top: calc(100% + 8px);
   right: 0;
   margin: 0;
   padding: 6px;
   list-style: none;
-  min-width: 140px;
-  max-height: 240px;
+  min-width: 148px;
+  max-height: 260px;
   overflow: auto;
-  background: #212121;
-  border: 1px solid #3f3f3f;
-  border-radius: 10px;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+  background: rgba(20, 20, 20, 0.96);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 12px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
 }
 .quality-menu-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
   padding: 8px 10px;
-  border-radius: 6px;
+  border-radius: 8px;
   color: #f1f1f1;
   font: 500 12px/1.2 "YouTube Sans", Roboto, Arial, sans-serif;
   cursor: pointer;
   white-space: nowrap;
 }
 .quality-menu-item:hover {
-  background: #3f3f3f;
+  background: rgba(255, 255, 255, 0.08);
 }
 .quality-menu-item.is-selected {
-  background: rgb(255 0 0 / 0.18);
+  background: rgb(255 0 51 / 0.16);
+  color: #fff;
+}
+.quality-menu-item-check {
+  opacity: 0;
+  color: #ff4d6a;
+  font-size: 12px;
+  font-weight: 700;
+}
+.quality-menu-item.is-selected .quality-menu-item-check {
+  opacity: 1;
 }
 
 #shell.is-embed #player-wrap {
@@ -120,7 +203,7 @@ body.is-embed #app {
   /* YouTube-like red progress / brand accent */
   --video-brand: #f00;
   --media-brand: #f00;
-  --video-border-radius: 0;
+  --video-border-radius: var(--ytdl-player-radius, 12px);
   --video-border: none;
   --video-font-family: "YouTube Sans", "Roboto", Arial, sans-serif;
   --video-controls-color: #fff;
@@ -131,6 +214,14 @@ body.is-embed #app {
 #player-wrap media-player[data-view-type="video"] {
   aspect-ratio: unset;
   height: 100%;
+  border-radius: var(--ytdl-player-radius, 12px);
+  overflow: hidden;
+}
+
+#player-wrap video,
+#player-wrap .vds-video,
+#player-wrap media-provider {
+  border-radius: inherit;
 }
 
 #meta {
@@ -161,6 +252,364 @@ body.is-embed #app {
   border-radius: 4px;
 }
 
+/* Kill Vidstack native buffering spinner entirely — we own the loader */
+#player-wrap .vds-buffering-indicator {
+  display: none !important;
+}
+
+/* Hide Google Cast (not useful inside extension iframe) */
+#player-wrap .vds-google-cast-button,
+#player-wrap media-google-cast-button,
+#player-wrap [data-media-tooltip="Google Cast"],
+#player-wrap button[aria-label="Google Cast"],
+#player-wrap button[aria-label*="Cast" i] {
+  display: none !important;
+}
+
+/* Storyboard scrubber preview — tidy crop of sprite cell */
+#player-wrap .vds-thumbnail,
+#player-wrap media-thumbnail {
+  border-radius: 6px;
+  overflow: hidden;
+  box-shadow: 0 4px 16px rgb(0 0 0 / 0.55);
+  border: 1px solid rgb(255 255 255 / 0.12);
+  background: #000;
+}
+
+#player-wrap .vds-slider-preview,
+#player-wrap .vds-time-slider .vds-slider-preview {
+  --media-slider-preview-bg: transparent;
+}
+
+/*
+ * YouTube-style chapter segments on the time slider.
+ * Do NOT force equal flex widths or transparent .vds-slider-track —
+ * track-fill / progress also use that class; wiping it removes the red bar.
+ * Vidstack sets per-chapter widths from cue durations.
+ *
+ * Visual gaps between chapters (slightly more than Vidstack's 2px default).
+ * Hit-testing stays on media-time-slider, so scrub/hover/preview still work
+ * in the gutter; chapter scale-on-hover remains on each segment.
+ */
+#player-wrap .vds-time-slider .vds-slider-chapters,
+#player-wrap media-time-slider .vds-slider-chapters {
+  gap: 0;
+}
+
+#player-wrap .vds-slider-chapter {
+  --chapter-fill: var(--video-brand, #f00);
+  --chapter-progress: rgb(255 255 255 / 0.35);
+  border-radius: 1px;
+  overflow: hidden;
+  /* gutter between segments — keep pointer events so hover/click aren't dead */
+  margin-right: 3px !important;
+  box-sizing: border-box;
+}
+
+#player-wrap .vds-slider-chapter:last-child {
+  margin-right: 0 !important;
+}
+
+/* Ensure brand fill/progress stay visible even if theme vars lag */
+#player-wrap .vds-time-slider .vds-slider-track-fill {
+  background-color: var(--media-slider-track-fill-bg, var(--video-brand, #f00));
+}
+
+#player-wrap .vds-time-slider .vds-slider-progress {
+  background-color: var(--media-slider-track-progress-bg, rgb(255 255 255 / 0.35));
+}
+
+/* Keep chapter hover lift so segments stay discoverable across the gutter */
+@media (hover: hover) and (pointer: fine) {
+  #player-wrap .vds-time-slider .vds-slider-chapter:hover:not(:only-of-type) {
+    transform: scaleY(2);
+    transform-origin: center;
+    z-index: 1;
+  }
+}
+
+/* Chapter title above storyboard thumbnail while scrubbing */
+#player-wrap .vds-slider-chapter-title,
+#player-wrap media-slider-value[data-type="chapter"],
+#player-wrap .vds-slider-preview .vds-chapter-title {
+  max-width: min(280px, 70vw);
+  margin: 0 0 6px;
+  padding: 0 2px;
+  color: #fff;
+  font: 500 12px/1.3 "YouTube Sans", Roboto, Arial, sans-serif;
+  text-align: center;
+  text-shadow: 0 1px 2px rgb(0 0 0 / 0.85);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/*
+ * Minimal single-ring spinner (css-loaders / loading.io style).
+ * One element, red accent, no dual rings / center pulse.
+ */
+.ytdl-loader {
+  position: absolute;
+  inset: 0;
+  z-index: 25;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 0.18s ease, visibility 0.18s ease;
+  background: radial-gradient(ellipse at center, rgb(0 0 0 / 0.22) 0%, transparent 58%);
+}
+
+#player-wrap.is-buffering .ytdl-loader {
+  opacity: 1;
+  visibility: visible;
+}
+
+.ytdl-loader-ring {
+  box-sizing: border-box;
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  border: 3px solid rgb(255 255 255 / 0.14);
+  border-top-color: #ff0033;
+  animation: ytdl-loader-spin 0.7s linear infinite;
+  will-change: transform;
+  transform: translateZ(0);
+  filter: drop-shadow(0 2px 8px rgb(0 0 0 / 0.4));
+}
+
+@keyframes ytdl-loader-spin {
+  to {
+    transform: translateZ(0) rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ytdl-loader-ring {
+    animation-duration: 1.6s;
+  }
+}
+
+/*
+ * Chapter title in controls — keep flex-grow so right-side buttons
+ * stay flush to the trailing edge (max-width broke that spacer).
+ */
+#player-wrap .vds-chapter-title,
+#player-wrap media-chapter-title,
+#player-wrap media-title.vds-chapter-title {
+  flex: 1 1 0%;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font: 500 13px/1.2 "YouTube Sans", Roboto, Arial, sans-serif;
+  color: rgba(255, 255, 255, 0.92);
+}
+
+/* Last control group: pin trailing buttons to the right edge */
+#player-wrap .vds-video-layout .vds-controls-group:last-child {
+  padding-inline: 6px 8px;
+}
+
+#player-wrap .vds-video-layout .vds-controls-group:last-child > .vds-button:last-child {
+  margin-right: 0;
+}
+
+/*
+ * Volume slider ↔ time ↔ chapter title:
+ * equal gap on both sides of the time group (20px).
+ * Also balance spacing around the `/` divider.
+ */
+#player-wrap .vds-video-layout:not([data-sm]) .vds-time-group {
+  margin-left: 20px;
+  margin-right: 20px;
+}
+
+#player-wrap .vds-video-layout .vds-time[data-type="current"] {
+  margin-right: 0;
+}
+
+#player-wrap .vds-video-layout .vds-time-divider {
+  margin: 0 6px;
+}
+
+/* ── Always Ad-Free toggle in settings menu ─────────────────────────── */
+#player-wrap .ytdl-always-adfree-section {
+  margin: 0 0 4px;
+  padding: 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+#player-wrap .ytdl-always-adfree {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 48px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: background 0.12s ease;
+}
+
+#player-wrap .ytdl-always-adfree:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+#player-wrap .ytdl-always-adfree-icon {
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  background: rgba(255, 0, 51, 0.16);
+  color: #ff4d6a;
+}
+
+#player-wrap .ytdl-always-adfree-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+#player-wrap .ytdl-always-adfree .vds-menu-item-label {
+  font: 600 13px/1.25 "YouTube Sans", Roboto, Arial, sans-serif;
+  color: #fff;
+}
+
+#player-wrap .ytdl-always-adfree-desc {
+  font: 400 11px/1.3 "YouTube Sans", Roboto, Arial, sans-serif;
+  color: rgba(255, 255, 255, 0.5);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+#player-wrap .ytdl-always-adfree-hint {
+  flex-shrink: 0;
+  font: 600 11px/1 "YouTube Sans", Roboto, Arial, sans-serif;
+  color: rgba(255, 255, 255, 0.45);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+#player-wrap .ytdl-always-adfree-checkbox.is-on,
+#player-wrap .ytdl-always-adfree-checkbox[aria-checked="true"] {
+  /* brand accent when on — theme vars still apply for motion */
+  --checkbox-active-bg: #ff0033;
+}
+
+/*
+ * Chapters menu — laconic list: tight rows, start time chip, no bulky duration/thumbs.
+ * Close-on-select is wired in main.ts (media-chapters-radio-group change → menu.close).
+ */
+#player-wrap .vds-chapters-menu-items,
+#player-wrap .vds-menu-items:has(.vds-chapters-radio-group) {
+  min-width: 220px !important;
+  max-width: min(320px, 86vw);
+  max-height: min(360px, 55vh);
+  padding: 6px !important;
+  border-radius: 12px;
+  overflow: auto;
+  background: rgba(20, 20, 20, 0.96);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+}
+
+#player-wrap .vds-chapters-radio-group {
+  gap: 2px;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Compact row: title + start time only */
+#player-wrap .vds-chapter-radio {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0;
+  padding: 8px 10px !important;
+  border: 0 !important;
+  border-radius: 8px !important;
+  border-bottom: none !important;
+  background: transparent;
+  cursor: pointer;
+  transition: background 0.12s ease;
+}
+
+#player-wrap .vds-chapter-radio:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+#player-wrap .vds-chapter-radio[aria-checked="true"] {
+  background: rgb(255 0 51 / 0.16) !important;
+  border-left: none !important;
+  padding-left: 10px !important;
+}
+
+/* Progress underline on active chapter — thin brand accent */
+#player-wrap .vds-chapter-radio[aria-checked="true"]::after {
+  height: 2px !important;
+  border-radius: 0 0 8px 8px !important;
+  background-color: #ff0033 !important;
+}
+
+/* Drop storyboard thumbs + duration for a denser YouTube-like list */
+#player-wrap .vds-chapters-radio-group .vds-thumbnail,
+#player-wrap .vds-chapters-radio-group media-thumbnail,
+#player-wrap .vds-chapter-radio-duration {
+  display: none !important;
+}
+
+#player-wrap .vds-chapter-radio-content {
+  flex: 1 1 auto;
+  min-width: 0;
+  flex-direction: row !important;
+  flex-wrap: nowrap !important;
+  align-items: center !important;
+  gap: 10px;
+  width: 100%;
+}
+
+#player-wrap .vds-chapter-radio-label {
+  flex: 1 1 auto;
+  min-width: 0;
+  color: rgba(255, 255, 255, 0.88) !important;
+  font: 500 12.5px/1.25 "YouTube Sans", Roboto, Arial, sans-serif !important;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+#player-wrap .vds-chapter-radio[aria-checked="true"] .vds-chapter-radio-label {
+  color: #fff !important;
+  font-weight: 600 !important;
+}
+
+#player-wrap .vds-chapter-radio-start-time {
+  flex: 0 0 auto;
+  margin: 0 !important;
+  margin-left: auto !important;
+  padding: 2px 6px !important;
+  border-radius: 999px !important;
+  background: rgba(255, 255, 255, 0.08) !important;
+  color: rgba(255, 255, 255, 0.55) !important;
+  font: 600 10px/1.2 "Roboto Mono", ui-monospace, Menlo, monospace !important;
+  letter-spacing: 0.02em;
+  font-variant-numeric: tabular-nums;
+}
+
+#player-wrap .vds-chapter-radio[aria-checked="true"] .vds-chapter-radio-start-time {
+  color: #fff !important;
+  background: rgba(255, 0, 51, 0.4) !important;
+}
+
 .quality-hint {
   margin-top: 10px;
   color: #717171;
@@ -176,25 +625,26 @@ body.is-embed #app {
   gap: 16px;
   color: #aaa;
   min-height: 50vh;
+  /* Isolate spinner from layout reflows (HUD/text) that caused wobble */
+  contain: layout style;
 }
 
 body.is-embed #loading {
   min-height: 100%;
 }
 
+/* Initial page load — same minimal ring as in-player loader */
 #loading .spinner {
+  box-sizing: border-box;
   width: 40px;
   height: 40px;
-  border: 3px solid #333;
-  border-top-color: #f00;
+  flex: 0 0 40px;
   border-radius: 50%;
-  animation: spin 0.8s linear infinite;
-}
-
-@keyframes spin {
-  to {
-    transform: rotate(360deg);
-  }
+  border: 3px solid rgb(255 255 255 / 0.14);
+  border-top-color: #ff0033;
+  transform: translateZ(0);
+  will-change: transform;
+  animation: ytdl-loader-spin 0.7s linear infinite;
 }
 
 #error {
