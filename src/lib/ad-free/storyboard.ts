@@ -161,6 +161,9 @@ function sheetUrl(template: string, sheetIndex: number): string {
  * @param durationSeconds - Video length (from videoDetails); used to space frames
  *   when the level omits interval or to clamp the last sheet.
  */
+/** Cap cues so long videos (e.g. 2h+ @ 2s) don't block first paint with 800+ objects. */
+const MAX_STORYBOARD_THUMBS = 180;
+
 export function storyboardLevelToThumbs(
   level: StoryboardLevel,
   durationSeconds: number
@@ -180,6 +183,11 @@ export function storyboardLevelToThumbs(
     interval = 2;
   }
 
+  // Subsample when YouTube gives a dense board (868 frames on long videos)
+  const step = level.frameCount > MAX_STORYBOARD_THUMBS
+    ? Math.ceil(level.frameCount / MAX_STORYBOARD_THUMBS)
+    : 1;
+
   const thumbs: StoryboardThumb[] = [];
   let frameIndex = 0;
 
@@ -188,10 +196,16 @@ export function storyboardLevelToThumbs(
     const framesInSheet = Math.min(perSheet, level.frameCount - frameIndex);
 
     for (let local = 0; local < framesInSheet; local += 1) {
+      const absoluteIndex = frameIndex;
+      frameIndex += 1;
+      if (absoluteIndex % step !== 0 && absoluteIndex !== level.frameCount - 1) {
+        continue;
+      }
+
       const col = local % level.columns;
       const row = Math.floor(local / level.columns);
-      const startTime = frameIndex * interval;
-      let endTime = startTime + interval;
+      const startTime = absoluteIndex * interval;
+      let endTime = startTime + interval * step;
       if (durationSeconds > 0) {
         endTime = Math.min(endTime, durationSeconds);
       }
@@ -210,7 +224,6 @@ export function storyboardLevelToThumbs(
           y: row * level.height
         }
       });
-      frameIndex += 1;
     }
   }
 

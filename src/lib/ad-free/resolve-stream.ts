@@ -280,7 +280,7 @@ export function buildAdFreeStreamPayload(
     captions: extractCaptionsFromPlayerResponse(response),
     storyboardSpec: extractStoryboardSpec(response),
     // ANDROID_VR rarely includes markersMap; prefer empty and merge from the watch page.
-    chapters: extractChaptersFromSource(response, durationSeconds),
+    chapters: extractChaptersFromSource(response, durationSeconds, videoId),
     resolvedAt: Date.now()
   };
 }

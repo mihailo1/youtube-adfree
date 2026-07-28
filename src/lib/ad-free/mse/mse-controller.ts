@@ -72,8 +72,9 @@ const MID_FIRST_VIDEO_CHUNKS = 6;
 const MID_FILL_CHUNKS = 12;
 /** Audio re-anchor prefetch per attempt (coverTime + minAhead stop early). */
 const MID_PREFETCH_AUDIO = 10;
-const START_PREFETCH_VIDEO = 6;
-const START_PREFETCH_AUDIO = 4;
+/** 2160p needs more than 6×512KB before first playable second (~0.7s was causing underrun flash). */
+const START_PREFETCH_VIDEO = 14;
+const START_PREFETCH_AUDIO = 6;
 /** Audio re-anchor attempts when A/V timestamps miss each other. */
 const AUDIO_SYNC_ATTEMPTS = 6;
 

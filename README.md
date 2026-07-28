@@ -1,6 +1,6 @@
 # YouTube Ad-Free
 
-**v1.1.1** — MV3 browser extension that swaps the YouTube watch player for an **ad-free in-page player**, with MSE adaptive seek, chapters, quality selection, captions, background playback, and the original download tooling from the upstream project.
+**v1.2.1** — MV3 browser extension that swaps the YouTube watch player for an **ad-free in-page player**, with MSE adaptive seek, chapters, YouTube-style hotkeys, remembered quality (Settings ⚙ submenu), Always Ad-Free, session diagnostic export, captions, background playback, and the original download tooling from the upstream project.
 
 **Repo:** [mihailo1/youtube-adfree](https://github.com/mihailo1/youtube-adfree)
 
@@ -9,27 +9,35 @@ Built on top of [avi12/youtube-downloader](https://github.com/avi12/youtube-down
 ## Features
 
 - **In-page toggle** — **Ad-Free** chip on the top-left of the YouTube player; no extra tab
-- **Always Ad-Free** — optional default (off by default): Settings ⚙ in the player or popup → open watch pages in Ad-Free automatically
+- **Always Ad-Free** — optional default (off by default): Settings ⚙ in the player or popup → open watch pages in Ad-Free automatically; mid-ad entry autoplays content (not the ad clock)
 - **Ad-free playback** — streams via ANDROID_VR InnerTube (direct CDN URLs), not the YouTube HTML5 ad pipeline
 - **MSE adaptive** — dual-track Media Source for high-quality adaptive streams; reliable mid-file scrub
 - **Chapters** — YouTube chapter markers on the scrubber + compact chapter list
-- **Quality menu** — custom chip + engine single-rendition loads (no multi-src buffer bloat)
+- **Hotkeys** — YouTube-style: `j`/`l`, arrows, `m`, `f`, `c`, `0`–`9`, speed `<`/`>`, frame step, PiP `i`
+- **Remember quality** — last chosen height/type restored on the next video
+- **Quality menu** — Settings ⚙ → Quality submenu; engine single-rendition loads (no multi-src buffer bloat)
+- **Diagnostics (alpha)** — popup Settings → download session log for bug reports
 - **Captions** — WebVTT tracks from the player response / page data (Settings → Captions)
 - **State sync** — time, volume, rate, and play/pause intent preserved when switching YouTube ↔ Ad-Free
 - **Unload original** — while Ad-Free is active the native player is parked and media is detached to free memory
 - **Keep playing** — playback continues when you focus another OS window (best-effort against Chrome media pause)
 - **Downloads** — full upstream download / playlist / FFmpeg mux pipeline remains available
 
-## Install (development build)
+## Install (development / alpha)
+
+**Alpha testers:** see **[docs/ALPHA-TESTING.md](docs/ALPHA-TESTING.md)** (zip install + how to send session logs).
 
 ```sh
 pnpm install
-pnpm build
+pnpm build          # → .output/chrome-mv3/
+pnpm run alpha:pack # build + zip for sharing
 ```
 
 1. Open `chrome://extensions` (or Edge / Brave equivalent)
 2. Enable **Developer mode**
-3. **Load unpacked** → select `.output/chrome-mv3`
+3. **Load unpacked** → select `.output/chrome-mv3` (or the unzipped alpha zip)
+
+**Session diagnostics:** popup → Settings → **Diagnostics (alpha)** → Download log.
 
 Firefox:
 
@@ -45,7 +53,7 @@ Then load `.output/firefox-mv3` via `about:debugging` → This Firefox → Load 
 2. Click **Ad-Free** (top-left on the video) — or enable **Always Ad-Free** in player Settings / popup
 3. Wait for the overlay player to load (auto-resumes if the original was playing)
 4. Click **YouTube** on the same control to switch back (position and play intent preserved)
-5. In the Ad-Free player: quality chip (top-right), chapters menu, **Settings** for captions and Always Ad-Free
+5. In the Ad-Free player: quality chip (top-right), chapters menu, **Settings** for captions and Always Ad-Free; keyboard shortcuts match YouTube. Downloads stay under the video (watch button).
 
 ## Develop
 

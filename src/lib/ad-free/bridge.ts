@@ -30,6 +30,13 @@ export type AdFreeBridgeToPlayer =
   | {
     type: typeof AD_FREE_BRIDGE_TYPE;
     action: "pause";
+  }
+  | {
+    type: typeof AD_FREE_BRIDGE_TYPE;
+    /** Late chapters after SPA/Always Ad-Free (page markers hydrate after enable). */
+    action: "set-chapters";
+    videoId: string;
+    chapters: Array<{ startSeconds: number; endSeconds: number; title: string }>;
   };
 
 export type AdFreeBridgeFromPlayer =

@@ -22,10 +22,7 @@ import {
   requestPlayerSnapshot,
   pushSnapshotToPlayer
 } from "@/lib/ad-free/content-bridge-client";
-import {
-  captureYouTubeSnapshot,
-  pauseYouTubePlayer
-} from "@/lib/ad-free/content-yt-snapshot";
+import { captureYouTubeSnapshot, isYouTubeShowingAd, pauseYouTubePlayer } from "@/lib/ad-free/content-yt-snapshot";
 import {
   ensureStyles,
   setButtonContents,
@@ -35,20 +32,29 @@ import {
   startLayoutTracking,
   syncRootLayout,
   showOverlayActive,
-  hideOverlayKeepAlive
+  hideOverlayKeepAlive,
+  setHostActive,
+  showImmediateCover,
+  installEarlyHideCss,
+  removeEarlyHideCss
 } from "@/lib/ad-free/content-overlay";
 import {
   type AdFreeStreamPayload,
   adFreeStreamStorageKey
 } from "@/lib/ad-free/resolve-stream";
-import { extractChaptersFromDocument } from "@/lib/ad-free/chapters";
+import {
+  chaptersFitDuration,
+  extractChaptersFromDocument
+} from "@/lib/ad-free/chapters";
 import { extractStoryboardSpecFromDocument } from "@/lib/ad-free/storyboard";
 import { extractVisitorDataFromDocument } from "@/lib/ad-free/visitor-data";
 import { createAdFreeLogger } from "@/lib/ad-free/debug-log";
 import { createYouTubeParkController } from "@/lib/ad-free/youtube-park";
 import {
   getAdFreeDefaultEnabled,
-  watchAdFreeDefaultEnabled
+  readAdFreeDefaultFromLocalCache,
+  watchAdFreeDefaultEnabled,
+  writeAdFreeDefaultLocalCache
 } from "@/lib/ad-free/default-pref";
 import { MessageType, sendMessage } from "@/lib/messaging/messaging";
 
@@ -63,7 +69,87 @@ let isAdFreeDefault = false;
 /** One auto-enable attempt per videoId (manual switch-back stays until next video). */
 let autoEnableForVideoId: string | null = null;
 let isAutoEnabling = false;
+/** Early cover applied once per navigation — prevents MO/log infinite loops. */
+let hasEarlyCover = false;
+let earlyCoverObserver: MutationObserver | null = null;
+/** Scheduled Always Ad-Free resolve/enable retries after early 403 / CS-not-ready. */
+let enableRetryTimer = 0;
+let enableRetryCount = 0;
 const youtubePark = createYouTubeParkController();
+
+function sleep(ms: number) {
+  return new Promise<void>(resolve => {
+    window.setTimeout(resolve, ms);
+  });
+}
+
+function isRetriableResolveError(message: string) {
+  return /403|content script|Receiving end|Could not establish connection|no content script|try again/i
+    .test(message);
+}
+
+/**
+ * ANDROID_VR via page-proxy needs youtube.content (document_idle) + MAIN fetch bridge.
+ * document_start auto-enable often races → 403. Retry with cover kept.
+ */
+async function resolveStreamWithRetry(videoId: string) {
+  const delaysMs = [0, 350, 700, 1_200, 2_000, 3_500];
+  let lastMessage = "resolve failed";
+  for (let attempt = 0; attempt < delaysMs.length; attempt += 1) {
+    if (delaysMs[attempt] > 0) {
+      await sleep(delaysMs[attempt]);
+    }
+    // Keep black cover while waiting for proxy CS
+    if (!hasEarlyCover) {
+      applyEarlyCover(`resolve-wait-${attempt}`);
+    } else {
+      pauseYouTubePlayer();
+      youtubePark.park();
+    }
+    try {
+      const payload = await sendMessage(MessageType.ResolveAdFreeStream, { videoId });
+      return payload;
+    } catch (error) {
+      lastMessage = error instanceof Error ? error.message : String(error);
+      log.info("resolve attempt failed", { attempt, message: lastMessage.slice(0, 120) });
+      if (!isRetriableResolveError(lastMessage)) {
+        throw error instanceof Error ? error : new Error(lastMessage);
+      }
+    }
+  }
+  throw new Error(lastMessage);
+}
+
+function clearEnableRetry() {
+  if (enableRetryTimer) {
+    window.clearTimeout(enableRetryTimer);
+    enableRetryTimer = 0;
+  }
+}
+
+function scheduleEnableRetry(reason: string) {
+  if (!isAdFreeDefault || isAdFreeActive) {
+    return;
+  }
+  if (enableRetryCount >= 6) {
+    log.warn("enable retry gave up", { reason, enableRetryCount });
+    return;
+  }
+  clearEnableRetry();
+  const delay = Math.min(4_000, 600 + enableRetryCount * 700);
+  enableRetryCount += 1;
+  log.info("enable retry scheduled", { reason, delay, attempt: enableRetryCount });
+  // Allow tryAutoEnable / enable again
+  autoEnableForVideoId = null;
+  isAutoEnabling = false;
+  enableRetryTimer = window.setTimeout(() => {
+    enableRetryTimer = 0;
+    if (isAdFreeActive || !isAdFreeDefault) {
+      return;
+    }
+    void tryAutoEnableAdFree();
+  }, delay);
+}
 
 async function persistVisitorData() {
   const visitorData = extractVisitorDataFromDocument();
@@ -162,24 +248,44 @@ async function mergePageStoryboard(payload: AdFreeStreamPayload): Promise<AdFree
 }
 
 /**
- * Prefer chapters already on the stream payload; otherwise pull markersMap /
- * engagementPanels from ytInitialData on the watch page (ANDROID_VR rarely has them).
+ * Prefer chapters already on the stream payload; otherwise pull markers for
+ * **this videoId only** from the watch page (ANDROID_VR rarely has them).
+ *
+ * Must scope by videoId: after SPA navigation, leftover ytInitialData from the
+ * previous watch used to leak chapters into videos that have none.
  */
 async function mergePageChapters(payload: AdFreeStreamPayload): Promise<AdFreeStreamPayload> {
+  const videoId = payload.videoId;
+  const duration = payload.durationSeconds > 0 ? payload.durationSeconds : 0;
+
+  // Even if ANDROID_VR returned chapters, drop them when they don't fit this video
+  // (defensive — wrong merge / cache pollution).
   if (payload.chapters.length >= 2) {
-    return payload;
+    if (chaptersFitDuration(payload.chapters, duration)) {
+      return payload;
+    }
+    log.warn("dropping payload chapters that don't fit duration", {
+      videoId,
+      duration,
+      count: payload.chapters.length,
+      lastStart: payload.chapters[payload.chapters.length - 1]?.startSeconds
+    });
   }
 
-  const pageChapters = extractChaptersFromDocument(
-    document,
-    payload.durationSeconds > 0 ? payload.durationSeconds : 0
-  );
+  const pageChapters = extractChaptersFromDocument(document, duration, videoId);
   if (pageChapters.length < 2) {
-    log.debug("no page chapters either");
-    return payload;
+    log.debug("no page chapters either", { videoId });
+    // Keep empty for now; scheduleLateChapterMerge will retry after YT panels hydrate
+    if (payload.chapters.length > 0 && !chaptersFitDuration(payload.chapters, duration)) {
+      const cleared: AdFreeStreamPayload = { ...payload, chapters: [] };
+      await storePayloadInSession(cleared);
+      return cleared;
+    }
+    return { ...payload, chapters: [] };
   }
 
   log.info("merged chapters from watch page", {
+    videoId,
     count: pageChapters.length,
     first: pageChapters[0]?.title?.slice(0, 60)
   });
@@ -191,7 +297,89 @@ async function mergePageChapters(payload: AdFreeStreamPayload): Promise<AdFreeSt
   return next;
 }
 
-async function enableAdFree(elButton: HTMLButtonElement) {
+let lateChapterTimer = 0;
+
+function clearLateChapterMerge() {
+  if (lateChapterTimer) {
+    window.clearTimeout(lateChapterTimer);
+    lateChapterTimer = 0;
+  }
+}
+
+/**
+ * Always Ad-Free enables before engagement-panel / script chapters exist.
+ * Retry extraction and push into the player via bridge when they appear.
+ */
+function scheduleLateChapterMerge(
+  videoId: string,
+  durationSeconds: number,
+  alreadyHasChapters: boolean
+) {
+  clearLateChapterMerge();
+  if (alreadyHasChapters) {
+    return;
+  }
+
+  const delays = [600, 1_500, 3_000, 6_000];
+  let attempt = 0;
+
+  const tick = () => {
+    lateChapterTimer = 0;
+    if (!isAdFreeActive || activeVideoId !== videoId) {
+      return;
+    }
+    const chapters = extractChaptersFromDocument(
+      document,
+      durationSeconds > 0 ? durationSeconds : 0,
+      videoId
+    );
+    if (chapters.length >= 2) {
+      log.info("late chapters merge", {
+        videoId,
+        count: chapters.length,
+        attempt,
+        first: chapters[0]?.title?.slice(0, 60)
+      });
+      // Patch only chapters on existing session payload
+      void (async () => {
+        try {
+          const key = adFreeStreamStorageKey(videoId);
+          const existing = await browser.storage.session.get(key);
+          const prev = existing[key];
+          if (prev && typeof prev === "object") {
+            await browser.storage.session.set({
+              [key]: { ...(prev as object), chapters }
+            });
+          }
+        } catch {
+          // ignore
+        }
+      })();
+      postToPlayer({
+        type: AD_FREE_BRIDGE_TYPE,
+        action: "set-chapters",
+        videoId,
+        chapters
+      });
+      return;
+    }
+
+    attempt += 1;
+    if (attempt < delays.length) {
+      lateChapterTimer = window.setTimeout(tick, delays[attempt]);
+    }
+  };
+
+  lateChapterTimer = window.setTimeout(tick, delays[0]);
+}
+
+async function enableAdFree(
+  elButton: HTMLButtonElement,
+  options?: {
+    /** Always Ad-Free / auto path — user opened a watch page to watch. */
+    preferPlay?: boolean;
+  }
+) {
   const videoId = getVideoId();
   if (!videoId || !getPlayerHost()) {
     log.warn("enable skipped — no video/host");
@@ -203,39 +391,58 @@ async function enableAdFree(elButton: HTMLButtonElement) {
   setButtonContents(elButton, "Loading...", { withDot: false, isActive: false });
 
   try {
+    const isAd = isYouTubeShowingAd();
     const ytSnapshot = captureYouTubeSnapshot(videoId);
+    // Mid-ad / Always Ad-Free: force play — park often reports wasPlaying=false (black screen)
+    if (isAd || options?.preferPlay) {
+      ytSnapshot.wasPlaying = true;
+      log.info("autoplay forced", { t: Math.round(ytSnapshot.currentTime), isAd });
+    }
     lastSnapshot = ytSnapshot;
-    log.debug("yt snapshot", ytSnapshot);
+
+    // Cover immediately with CSS + black shell. Park only (pause/mute) — do NOT
+    // unload yet: early unload during YT SPA load freezes Polymer/main thread.
+    showImmediateCover();
     pauseYouTubePlayer();
     youtubePark.park();
+    activeVideoId = videoId;
+
     await persistVisitorData();
 
     const existingIframe = getIframe();
     const isKeepAliveSameVideo = existingIframe?.dataset.videoId === videoId;
+    let resolvedChapters = 0;
+    let resolvedDuration = 0;
 
     if (!isKeepAliveSameVideo) {
       log.info("resolve stream");
-      let payload = await sendMessage(MessageType.ResolveAdFreeStream, { videoId });
+      let payload = await resolveStreamWithRetry(videoId);
       payload = await mergePageCaptions(payload);
       payload = await mergePageStoryboard(payload);
       payload = await mergePageChapters(payload);
+      resolvedChapters = payload.chapters.length;
+      resolvedDuration = payload.durationSeconds;
       log.info("stream resolved", {
         selected: payload.selectedQualityId,
-        qualities: payload.qualities.map(item => item.label),
-        storyboard: Boolean(payload.storyboardSpec),
+        qualities: payload.qualities.length,
         chapters: payload.chapters.length
       });
     } else {
       log.info("reuse keep-alive iframe");
     }
 
-    activeVideoId = videoId;
-    const created = ensureOverlay(videoId, ytSnapshot.currentTime, {
-      onDestroy: () => void toggleAdFree(),
-      onIframeCreated() { isPlayerReady = false; }
-    });
+    const created = ensureOverlay(
+      videoId,
+      ytSnapshot.currentTime,
+      {
+        onDestroy: () => void toggleAdFree(),
+        onIframeCreated() {
+          isPlayerReady = false;
+        }
+      },
+      { startPaused: !ytSnapshot.wasPlaying }
+    );
     showOverlayActive();
-    // Keep park enforced while overlay is active
     youtubePark.park();
 
     const elLiveButton = document.getElementById(BUTTON_ID) as HTMLButtonElement | null ?? elButton;
@@ -243,27 +450,50 @@ async function enableAdFree(elButton: HTMLButtonElement) {
     if (created || !isKeepAliveSameVideo) {
       await waitForPlayerReady(videoId);
       log.info("player ready", { isPlayerReady });
+    } else {
     }
-    // Preserve play/pause intent from YouTube (and keep-alive ad-free buffers).
-    // Do not force-pause: round-trip original ↔ ad-free should resume if it was playing.
-    await pushSnapshotToPlayer(ytSnapshot, false);
+
+    // Fresh iframe already started with loadQuality(wasPlaying) + paused=0/1.
+    // Re-pushing snapshot caused thin-buffer rebuffer flicker (play→pause→play).
+    // Only push when keep-alive reuse (same iframe, may need time/play sync).
+    if (!created && isKeepAliveSameVideo) {
+      await pushSnapshotToPlayer(ytSnapshot, false);
+    } else {
+    }
 
     isAdFreeActive = true;
-    // Free original player memory once Ad-Free owns playback
+    enableRetryCount = 0;
+    clearEnableRetry();
+    // Unload original only after Ad-Free is ready (safe for YT SPA)
     youtubePark.unload();
     // Fresh enable: controls start visible until player reports idle
     getRoot()?.classList.remove("is-controls-hidden");
     setButtonContents(elLiveButton, "YouTube", { isActive: true });
     elLiveButton.disabled = false;
-    log.info("enable done");
+    log.info("enable done", { wasPlaying: ytSnapshot.wasPlaying, isAd });
+    // Always Ad-Free often runs before YT chapter markers exist in DOM/scripts
+    scheduleLateChapterMerge(videoId, resolvedDuration, resolvedChapters >= 2);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     log.error("enable failed", { message });
     console.error("[ytdl-ad-free]", message);
-    youtubePark.unpark();
-    hideOverlayKeepAlive();
     isAdFreeActive = false;
     const elLiveButton = document.getElementById(BUTTON_ID) as HTMLButtonElement | null ?? elButton;
+
+    // Always Ad-Free: keep cover, do NOT unpark (that flash of paused YT was the bug)
+    if (isAdFreeDefault && isRetriableResolveError(message)) {
+      installEarlyHideCss();
+      showImmediateCover();
+      pauseYouTubePlayer();
+      youtubePark.park();
+      setButtonContents(elLiveButton, "Loading...", { withDot: false, isActive: false });
+      scheduleEnableRetry(message.slice(0, 80));
+      return;
+    }
+
+    youtubePark.unpark();
+    hideOverlayKeepAlive();
+    removeEarlyHideCss();
     setButtonContents(elLiveButton, "Failed — retry", { withDot: false, isActive: false });
     setTimeout(() => {
       if (!isAdFreeActive) {
@@ -277,6 +507,7 @@ async function enableAdFree(elButton: HTMLButtonElement) {
 async function disableAdFree(elButton?: HTMLButtonElement | null) {
   const videoId = getVideoId() ?? activeVideoId;
   log.info("disable", { videoId });
+  clearLateChapterMerge();
   elButton ??= document.getElementById(BUTTON_ID) as HTMLButtonElement | null;
 
   if (elButton) {
@@ -294,7 +525,10 @@ async function disableAdFree(elButton?: HTMLButtonElement | null) {
   log.debug("disable snapshot", snapshot);
 
   hideOverlayKeepAlive();
+  removeEarlyHideCss();
+  clearEnableRetry();
   isAdFreeActive = false;
+  hasEarlyCover = false;
   getRoot()?.classList.remove("is-controls-hidden");
   // Don't re-auto-enable on this video if default is on (user chose YouTube)
   if (videoId) {
@@ -324,14 +558,20 @@ async function disableAdFree(elButton?: HTMLButtonElement | null) {
 
 function resetForNavigation() {
   log.info("reset navigation");
+  clearLateChapterMerge();
   isAdFreeActive = false;
   activeVideoId = null;
   lastSnapshot = null;
   isPlayerReady = false;
   autoEnableForVideoId = null;
   isAutoEnabling = false;
+  hasEarlyCover = false;
+  enableRetryCount = 0;
+  clearEnableRetry();
+  stopEarlyCoverObserver();
   youtubePark.unpark();
   destroyOverlay();
+  removeEarlyHideCss();
 }
 
 async function toggleAdFree(elButton?: HTMLButtonElement | null) {
@@ -405,6 +645,35 @@ function waitForButtonTarget() {
  * When "Always Ad-Free" is on, enable as soon as the watch host exists.
  * Skips if user already switched back to YouTube for this videoId.
  */
+function stopEarlyCoverObserver() {
+  if (earlyCoverObserver) {
+    earlyCoverObserver.disconnect();
+    earlyCoverObserver = null;
+  }
+}
+
+/**
+ * Cover as soon as #movie_player exists — used for Always Ad-Free before full enable.
+ * Safe: park only, no unload. Idempotent — never logs/spams on repeated calls.
+ */
+function applyEarlyCover(reason: string): boolean {
+  if (hasEarlyCover) {
+    return true;
+  }
+  installEarlyHideCss();
+  ensureStyles();
+  const elHost = getPlayerHost();
+  if (!elHost) {
+    return false;
+  }
+  hasEarlyCover = true;
+  stopEarlyCoverObserver();
+  showImmediateCover();
+  pauseYouTubePlayer();
+  youtubePark.park();
+  return true;
+}
+
 async function tryAutoEnableAdFree() {
   if (!isAdFreeDefault || isAdFreeActive || isAutoEnabling) {
     return;
@@ -420,6 +689,8 @@ async function tryAutoEnableAdFree() {
   isAutoEnabling = true;
   log.info("auto-enable (default on)", { videoId });
   try {
+    applyEarlyCover("auto-enable");
+
     if (!ensureUiShell()) {
       waitForButtonTarget();
       for (let attempt = 0; attempt < 25 && (!getPlayerHost() || !document.getElementById(BUTTON_ID)); attempt += 1) {
@@ -427,16 +698,32 @@ async function tryAutoEnableAdFree() {
           window.setTimeout(resolve, 120);
         });
         ensureUiShell();
+        // One-shot if host just appeared (hasEarlyCover makes this cheap)
+        if (!hasEarlyCover && getPlayerHost()) {
+          applyEarlyCover("auto-enable-poll");
+        } else if (getPlayerHost() && !youtubePark.isParked()) {
+          pauseYouTubePlayer();
+          youtubePark.park();
+        }
       }
     }
     const elButton = document.getElementById(BUTTON_ID) as HTMLButtonElement | null;
     if (!elButton || !getPlayerHost()) {
       log.warn("auto-enable deferred — host/button not ready");
+      // Keep early hide + schedule retry (do not unpark — flashes YT)
+      if (isAdFreeDefault) {
+        installEarlyHideCss();
+        scheduleEnableRetry("shell-not-ready");
+      } else if (!isAdFreeActive) {
+        setHostActive(false);
+        youtubePark.unpark();
+        removeEarlyHideCss();
+      }
       return;
     }
     // Mark before enable so a parallel nav/toggle cannot double-fire
     autoEnableForVideoId = videoId;
-    await enableAdFree(elButton);
+    await enableAdFree(elButton, { preferPlay: true });
   } catch (error) {
     // Allow retry on next navigation if enable failed
     if (autoEnableForVideoId === videoId && !isAdFreeActive) {
@@ -451,15 +738,54 @@ async function tryAutoEnableAdFree() {
 }
 
 function onWatchNavigation() {
-  void persistVisitorData();
   const videoId = getVideoId();
+  // Same video + already enabling/active: ignore SPA noise (yt-navigate-finish mid-load)
+  if (videoId && activeVideoId === videoId && (isAdFreeActive || isAutoEnabling || getIframe())) {
+    return;
+  }
+  // New video only — reset early-cover one-shot for the next page
+  if (videoId && activeVideoId && videoId !== activeVideoId) {
+    hasEarlyCover = false;
+    stopEarlyCoverObserver();
+  }
+  void persistVisitorData();
   if (!videoId || (activeVideoId && videoId !== activeVideoId)) {
     resetForNavigation();
+    hasEarlyCover = false;
+    stopEarlyCoverObserver();
   }
   waitForButtonTarget();
   if (isAdFreeDefault && videoId && autoEnableForVideoId !== videoId) {
     void tryAutoEnableAdFree();
   }
+}
+
+/**
+ * document_start: if Always Ad-Free was on last time, cover YT before it paints/plays.
+ * Pref is mirrored in localStorage by get/set/watch AdFreeDefault.
+ * Observer only tries until first success — never log per-mutation (that froze YT).
+ */
+function bootEarlyCoverFromCache() {
+  const cachedDefault = readAdFreeDefaultFromLocalCache();
+  if (!cachedDefault) {
+    return;
+  }
+  // Optimistic: treat as default-on until storage confirms
+  isAdFreeDefault = true;
+  // Instant CSS hide at +0ms — before #movie_player exists (logs showed ~1.2s of YT play)
+  installEarlyHideCss();
+  if (applyEarlyCover("document_start-cache")) {
+    return;
+  }
+  stopEarlyCoverObserver();
+  earlyCoverObserver = new MutationObserver(() => {
+    // Silent until host exists; applyEarlyCover is one-shot
+    if (getPlayerHost()) {
+      applyEarlyCover("document_start-mo");
+    }
+  });
+  earlyCoverObserver.observe(document.documentElement, { childList: true, subtree: true });
+  window.setTimeout(() => stopEarlyCoverObserver(), OBSERVER_DISCONNECT_MS);
 }
 
 function onBridgeFromPlayer(event: MessageEvent) {
@@ -490,12 +816,16 @@ function onBridgeFromPlayer(event: MessageEvent) {
 
 export default defineContentScript({
   matches: ["https://www.youtube.com/*"],
-  runAt: "document_idle",
+  // Early so Always Ad-Free can cover #movie_player before first paint/play
+  runAt: "document_start",
   main(ctx) {
+    bootEarlyCoverFromCache();
+
     window.addEventListener("message", onBridgeFromPlayer);
 
     void getAdFreeDefaultEnabled().then(enabled => {
       isAdFreeDefault = enabled;
+      writeAdFreeDefaultLocalCache(enabled);
       log.info("default pref loaded", { enabled });
       if (enabled) {
         void tryAutoEnableAdFree();
@@ -505,6 +835,7 @@ export default defineContentScript({
     const unwatchDefault = watchAdFreeDefaultEnabled(enabled => {
       const was = isAdFreeDefault;
       isAdFreeDefault = enabled;
+      writeAdFreeDefaultLocalCache(enabled);
       log.info("default pref changed", { enabled, was });
       if (enabled && !was && !isAdFreeActive) {
         // Newly enabled: clear skip so current video auto-enables once

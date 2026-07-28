@@ -41,5 +41,8 @@ ready (engine owns play)
 
 ## Out of scope (later)
 
+Moved to **[mse-phase3.md](./mse-phase3.md)** (draft):
+
 - True incremental append without reload  
 - Perfect sample-accurate PTS without trusting sidx  
+- Init/sidx cache on full reload, cheaper quality switch  

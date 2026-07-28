@@ -244,7 +244,7 @@ export function createYouTubeParkController(): YouTubeParkController {
       return isUnloaded;
     },
     park() {
-      log.info("park");
+      log.debug("park");
       isParked = true;
       tick();
       if (!pollId) {
@@ -252,7 +252,7 @@ export function createYouTubeParkController(): YouTubeParkController {
       }
     },
     unload() {
-      log.info("unload original player");
+      log.info("unload original");
       isParked = true;
       isUnloaded = true;
       const elPlayer = getYtPlayer();
@@ -271,7 +271,7 @@ export function createYouTubeParkController(): YouTubeParkController {
       }
     },
     unpark() {
-      log.info("unpark");
+      log.debug("unpark");
       isParked = false;
       if (pollId) {
         window.clearInterval(pollId);
@@ -288,7 +288,7 @@ export function createYouTubeParkController(): YouTubeParkController {
         muted = false,
         playbackRate = 1
       } = options;
-      log.info("reload original player", {
+      log.info("reload original", {
         videoId,
         startSeconds,
         play,

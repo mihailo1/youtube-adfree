@@ -1,4 +1,5 @@
 import type { AdFreeStreamPayload } from "@/lib/ad-free/resolve-stream";
+import type { SessionLogEntry } from "@/lib/ad-free/session-log";
 import type {
   DownloadRequest,
   DownloadType,
@@ -48,7 +49,13 @@ export const MessageType = {
   OpenAdFreePlayer: "openAdFreePlayer",
   ResolveAdFreeStream: "resolveAdFreeStream",
   /** Content script → BG: persist stream payload (session storage proxy). */
-  StoreAdFreeStreamPayload: "storeAdFreeStreamPayload"
+  StoreAdFreeStreamPayload: "storeAdFreeStreamPayload",
+  /** Append one line to the Chrome-session diagnostic log (BG ring). */
+  AdFreeLogAppend: "adFreeLogAppend",
+  /** Popup Settings: download/export session log text. */
+  AdFreeLogGet: "adFreeLogGet",
+  /** Popup Settings: clear session log. */
+  AdFreeLogClear: "adFreeLogClear"
 } as const;
 
 export type PageSabrFetchRequest = Prettify<{
@@ -300,6 +307,18 @@ export interface ProtocolMap {
   storeAdFreeStreamPayload(data: {
     payload: AdFreeStreamPayload;
   }): void;
+
+  adFreeLogAppend(data: {
+    entry: SessionLogEntry;
+  }): void;
+
+  adFreeLogGet(): {
+    text: string;
+    count: number;
+    sessionStarted: number;
+  };
+
+  adFreeLogClear(): void;
 }
 
 export const { sendMessage, onMessage } =

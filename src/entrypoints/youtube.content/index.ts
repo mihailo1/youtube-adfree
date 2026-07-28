@@ -17,9 +17,24 @@ import { INITIAL_OPTIONS as defaultOptions } from "@/lib/youtube/video-helpers";
 
 const YTDL_IFRAME_QUERY_PARAM = "ytdl=1";
 
+function waitForDocumentBody(): Promise<void> {
+  if (document.body && document.head) {
+    return Promise.resolve();
+  }
+  return new Promise(resolve => {
+    if (document.readyState !== "loading") {
+      resolve();
+      return;
+    }
+    document.addEventListener("DOMContentLoaded", () => resolve(), { once: true });
+  });
+}
+
 export default defineContentScript({
   matches: ["https://www.youtube.com/*"],
   allFrames: true,
+  // document_start so PageSabrFetch bridge is up before Ad-Free auto-enable resolve
+  runAt: "document_start",
   async main(context) {
     const isDownloadIframe = self !== top && location.search.includes(YTDL_IFRAME_QUERY_PARAM);
     const isUnrelatedIframe = self !== top && !isDownloadIframe;
@@ -27,7 +42,11 @@ export default defineContentScript({
       return;
     }
 
+    // Bridge only — safe before body exists
     registerPageSabrFetchBridge();
+
+    // DOM-touching setup must wait (document_start has null body → append crash)
+    await waitForDocumentBody();
 
     if (isDownloadIframe) {
       registerCrossWorldHandlers({

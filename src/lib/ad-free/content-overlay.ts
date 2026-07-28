@@ -12,6 +12,60 @@ import {
   getRoot
 } from "@/lib/ad-free/content-dom";
 
+/** html class + style for Always Ad-Free before #movie_player exists (0–1s gap). */
+export const EARLY_HIDE_CLASS = "ytdl-af-early-hide";
+const EARLY_STYLE_ID = "ytdl-ad-free-early-style";
+
+const EARLY_HIDE_CSS = `
+html.${EARLY_HIDE_CLASS} #movie_player,
+html.${EARLY_HIDE_CLASS} .html5-video-player {
+  background: #000 !important;
+}
+html.${EARLY_HIDE_CLASS} #movie_player video,
+html.${EARLY_HIDE_CLASS} .html5-video-player video,
+html.${EARLY_HIDE_CLASS} .html5-video-container,
+html.${EARLY_HIDE_CLASS} .ytp-chrome-bottom,
+html.${EARLY_HIDE_CLASS} .ytp-chrome-top,
+html.${EARLY_HIDE_CLASS} .ytp-bezel,
+html.${EARLY_HIDE_CLASS} .ytp-large-play-button {
+  opacity: 0 !important;
+  visibility: hidden !important;
+  pointer-events: none !important;
+}
+html.${EARLY_HIDE_CLASS} .ytp-ad-module,
+html.${EARLY_HIDE_CLASS} .video-ads,
+html.${EARLY_HIDE_CLASS} [class*="ytp-ad-"] {
+  display: none !important;
+  visibility: hidden !important;
+  pointer-events: none !important;
+}
+`;
+
+/** Instant black-out of native video/ads (no host required). Pair with Always Ad-Free cache. */
+export function installEarlyHideCss() {
+  try {
+    document.documentElement.classList.add(EARLY_HIDE_CLASS);
+  } catch {
+    // ignore
+  }
+  if (document.getElementById(EARLY_STYLE_ID)) {
+    return;
+  }
+  const elStyle = document.createElement("style");
+  elStyle.id = EARLY_STYLE_ID;
+  elStyle.textContent = EARLY_HIDE_CSS;
+  (document.documentElement ?? document.head).append(elStyle);
+}
+
+export function removeEarlyHideCss() {
+  try {
+    document.documentElement.classList.remove(EARLY_HIDE_CLASS);
+  } catch {
+    // ignore
+  }
+  document.getElementById(EARLY_STYLE_ID)?.remove();
+}
+
 const BUTTON_CSS = `
 /* Shared chip language with in-player quality menu */
 #${BUTTON_ID} {
@@ -120,31 +174,22 @@ const BUTTON_CSS = `
 }
 
 /*
- * In-host shell: absolute fill of #movie_player so scroll/stacking match native YT.
- * Never reparent after iframe exists (Chromium reloads iframe document on move).
- * Fallback: html > #root uses fixed + layout sync when host is missing at create time.
+ * Fixed shell on <html> (NOT inside #movie_player).
+ * YT Polymer rebuilds #movie_player mid-load and was destroying in-host roots →
+ * iframe pagehide + second player-init (visible flicker). Fixed overlay survives that.
  */
 #${ROOT_ID} {
-  position: absolute;
-  inset: 0;
-  z-index: 45;
-  width: 100%;
-  height: 100%;
+  position: fixed;
+  inset: auto;
+  z-index: 2147483646;
   margin: 0;
   padding: 0;
   border: 0;
   box-sizing: border-box;
   pointer-events: none;
   overflow: hidden;
-  /* Match modern YouTube player corner radius */
   border-radius: 12px;
-}
-/* Fallback mount on <html> — track host rect (fixed); clip under masthead */
-html > #${ROOT_ID} {
-  position: fixed;
-  inset: auto;
-  z-index: 39;
-  border-radius: 12px;
+  /* size/position set by syncRootLayout() from host rect */
 }
 #${ROOT_ID} #${BUTTON_ID} {
   pointer-events: auto;
@@ -188,40 +233,78 @@ html > #${ROOT_ID} {
   transform: translateZ(0);
 }
 
+/*
+ * Nuclear cover: while Ad-Free owns the host, hide EVERY direct child of the
+ * player except our root. Selective class lists miss new YT ad DOM variants.
+ */
+#movie_player.${HOST_ACTIVE_CLASS},
+.html5-video-player.${HOST_ACTIVE_CLASS} {
+  background: #000 !important;
+  isolation: isolate;
+}
+#movie_player.${HOST_ACTIVE_CLASS} > *:not(#${ROOT_ID}),
+.html5-video-player.${HOST_ACTIVE_CLASS} > *:not(#${ROOT_ID}) {
+  visibility: hidden !important;
+  opacity: 0 !important;
+  pointer-events: none !important;
+}
+/* Nested native surfaces (ads re-inject under hidden parents with own stacking) */
+#movie_player.${HOST_ACTIVE_CLASS} video,
+#movie_player.${HOST_ACTIVE_CLASS} .html5-main-video,
 #movie_player.${HOST_ACTIVE_CLASS} .html5-video-container,
 #movie_player.${HOST_ACTIVE_CLASS} .ytp-chrome-bottom,
 #movie_player.${HOST_ACTIVE_CLASS} .ytp-chrome-top,
-#movie_player.${HOST_ACTIVE_CLASS} .ytp-gradient-bottom,
-#movie_player.${HOST_ACTIVE_CLASS} .ytp-gradient-top,
-.html5-video-player.${HOST_ACTIVE_CLASS} .html5-video-container {
+#movie_player.${HOST_ACTIVE_CLASS} .ytp-bezel,
+#movie_player.${HOST_ACTIVE_CLASS} .ytp-large-play-button,
+.html5-video-player.${HOST_ACTIVE_CLASS} video {
   visibility: hidden !important;
+  opacity: 0 !important;
   pointer-events: none !important;
 }
-#movie_player.${HOST_ACTIVE_CLASS} .video-ads,
-#movie_player.${HOST_ACTIVE_CLASS} .ytp-ad-module,
-#movie_player.${HOST_ACTIVE_CLASS} .ytp-ad-player-overlay-layout,
-#movie_player.${HOST_ACTIVE_CLASS} .ytp-ad-player-overlay,
-#movie_player.${HOST_ACTIVE_CLASS} .ytp-ad-player-overlay-instream-info,
-#movie_player.${HOST_ACTIVE_CLASS} .ytp-ad-overlay-container,
-#movie_player.${HOST_ACTIVE_CLASS} .ytp-ad-overlay-slot,
-#movie_player.${HOST_ACTIVE_CLASS} .ytp-ad-image-overlay,
-#movie_player.${HOST_ACTIVE_CLASS} .ytp-ad-text-overlay,
-#movie_player.${HOST_ACTIVE_CLASS} .ytp-ad-progress-list,
-#movie_player.${HOST_ACTIVE_CLASS} .ytp-ad-progress,
-#movie_player.${HOST_ACTIVE_CLASS} [class*="ytp-ad-player-overlay"],
-#movie_player.${HOST_ACTIVE_CLASS} [id^="player-overlay-layout"],
-#movie_player.${HOST_ACTIVE_CLASS} [id^="ad-avatar"],
-#movie_player.${HOST_ACTIVE_CLASS} [id^="ad-button"],
-#movie_player.${HOST_ACTIVE_CLASS} [id^="ad-badge"],
-.html5-video-player.${HOST_ACTIVE_CLASS} .video-ads,
-.html5-video-player.${HOST_ACTIVE_CLASS} .ytp-ad-module {
+/* Page-level ad chrome (sometimes portaled outside #movie_player) */
+body:has(.${HOST_ACTIVE_CLASS}) .video-ads,
+body:has(.${HOST_ACTIVE_CLASS}) .ytp-ad-module,
+body:has(.${HOST_ACTIVE_CLASS}) .ytp-ad-player-overlay-layout,
+body:has(.${HOST_ACTIVE_CLASS}) .ytp-ad-player-overlay,
+body:has(.${HOST_ACTIVE_CLASS}) .ytp-ad-player-overlay-instream-info,
+body:has(.${HOST_ACTIVE_CLASS}) .ytp-ad-overlay-container,
+body:has(.${HOST_ACTIVE_CLASS}) .ytp-ad-skip-button-container,
+body:has(.${HOST_ACTIVE_CLASS}) .ytp-ad-skip-button,
+body:has(.${HOST_ACTIVE_CLASS}) .ytp-skip-ad-button,
+body:has(.${HOST_ACTIVE_CLASS}) .ytp-ad-preview-container,
+body:has(.${HOST_ACTIVE_CLASS}) .ytp-ad-text,
+body:has(.${HOST_ACTIVE_CLASS}) [class*="ytp-ad-"],
+body:has(.${HOST_ACTIVE_CLASS}) [id^="ad-avatar"],
+body:has(.${HOST_ACTIVE_CLASS}) [id^="ad-button"],
+body:has(.${HOST_ACTIVE_CLASS}) [id^="ad-badge"],
+body:has(.${HOST_ACTIVE_CLASS}) [id^="player-overlay-layout"] {
   display: none !important;
   visibility: hidden !important;
   opacity: 0 !important;
   pointer-events: none !important;
   width: 0 !important;
   height: 0 !important;
+  max-height: 0 !important;
   overflow: hidden !important;
+  z-index: -1 !important;
+}
+/* Our root always wins inside the player stacking context */
+#movie_player.${HOST_ACTIVE_CLASS} #${ROOT_ID},
+.html5-video-player.${HOST_ACTIVE_CLASS} #${ROOT_ID} {
+  visibility: visible !important;
+  opacity: 1 !important;
+  z-index: 2147483646 !important;
+  pointer-events: none !important;
+}
+#movie_player.${HOST_ACTIVE_CLASS} #${ROOT_ID}.${ROOT_ACTIVE_CLASS} #${OVERLAY_ID},
+.html5-video-player.${HOST_ACTIVE_CLASS} #${ROOT_ID}.${ROOT_ACTIVE_CLASS} #${OVERLAY_ID} {
+  pointer-events: auto !important;
+}
+#movie_player.${HOST_ACTIVE_CLASS} #${ROOT_ID} #${BUTTON_ID},
+.html5-video-player.${HOST_ACTIVE_CLASS} #${ROOT_ID} #${BUTTON_ID} {
+  pointer-events: auto !important;
+  visibility: visible !important;
+  opacity: 1 !important;
 }
 `;
 
@@ -229,8 +312,7 @@ let layoutRafId = 0;
 let layoutListening = false;
 
 /**
- * When root is mounted inside the player host → only ensure visibility.
- * When root is on documentElement (fallback fixed) → mirror host rect + clip under masthead.
+ * Mirror #movie_player rect onto fixed root (always on documentElement).
  */
 export function syncRootLayout() {
   const elRoot = getRoot();
@@ -250,18 +332,6 @@ export function syncRootLayout() {
   }
 
   elRoot.style.visibility = "visible";
-
-  // In-host absolute: no top/left tracking — scrolls with YouTube naturally
-  if (elRoot.parentElement === elHost) {
-    elRoot.style.top = "";
-    elRoot.style.left = "";
-    elRoot.style.width = "";
-    elRoot.style.height = "";
-    elRoot.style.clipPath = "";
-    return;
-  }
-
-  // Fixed fallback: track host + clip under sticky masthead (don't float over chrome)
   elRoot.style.top = `${Math.round(rect.top)}px`;
   elRoot.style.left = `${Math.round(rect.left)}px`;
   elRoot.style.width = `${Math.round(rect.width)}px`;
@@ -289,24 +359,28 @@ export function syncRootLayout() {
   } else {
     elRoot.style.clipPath = "";
   }
+
+  // Square corners in fullscreen
+  const isFs = elHost.classList.contains("ytp-fullscreen")
+    || elHost.hasAttribute("data-fullscreen")
+    || Boolean(document.fullscreenElement);
+  elRoot.style.borderRadius = isFs ? "0px" : "12px";
 }
 
-/** Prefer mounting inside #movie_player so overlay scrolls/stacks like native video. */
+/**
+ * Always mount on documentElement (fixed). Never inside #movie_player —
+ * YT rebuilds that node and was killing our iframe (second player-init flicker).
+ */
 function mountRoot(elRoot: HTMLElement) {
-  const elHost = getPlayerHost();
-  if (!elHost) {
-    if (elRoot.parentElement !== document.documentElement) {
-      document.documentElement.append(elRoot);
-    }
+  if (elRoot.parentElement === document.documentElement) {
     return;
   }
-  // Never reparent after iframe exists — Chromium reloads iframe document
-  if (getIframe() && elRoot.parentElement && elRoot.parentElement !== elHost) {
+  // If somehow left inside host from older builds, pull out without destroying iframe
+  // only when not yet having iframe; with iframe, leave in place (reparent reloads).
+  if (elRoot.querySelector(`#${IFRAME_ID}`) || getIframe()) {
     return;
   }
-  if (elRoot.parentElement !== elHost) {
-    elHost.append(elRoot);
-  }
+  document.documentElement.append(elRoot);
 }
 
 function scheduleLayoutSync() {
@@ -345,19 +419,116 @@ export function stopLayoutTracking() {
   }
 }
 
-export function setHostActive(isActive: boolean) {
-  document.querySelectorAll(`.${HOST_ACTIVE_CLASS}`).forEach(element => {
-    element.classList.remove(HOST_ACTIVE_CLASS);
-  });
-  if (!isActive) {
-    return;
+let coverEnforcerId = 0;
+
+/**
+ * Mark only the real player hosts. Avoid thrashing many ancestors on every tick
+ * (that + MutationObserver froze the watch page during SPA load).
+ */
+function markPlayerHosts() {
+  const elMovie = document.getElementById("movie_player");
+  if (elMovie instanceof HTMLElement) {
+    elMovie.classList.add(HOST_ACTIVE_CLASS);
+  }
+  const elHtml5 = document.querySelector(".html5-video-player");
+  if (elHtml5 instanceof HTMLElement) {
+    elHtml5.classList.add(HOST_ACTIVE_CLASS);
   }
   const elHost = getPlayerHost();
-  elHost?.classList.add(HOST_ACTIVE_CLASS);
+  if (elHost instanceof HTMLElement) {
+    elHost.classList.add(HOST_ACTIVE_CLASS);
+  }
+}
+
+export function setHostActive(isActive: boolean) {
+  if (!isActive) {
+    document.querySelectorAll(`.${HOST_ACTIVE_CLASS}`).forEach(element => {
+      element.classList.remove(HOST_ACTIVE_CLASS);
+    });
+    stopCoverEnforcer();
+    return;
+  }
+  // Only add — avoid remove+readd thrash (layout thrashing with nuclear CSS)
+  markPlayerHosts();
+  startCoverEnforcer();
+}
+
+/**
+ * Black cover shell as soon as possible (before stream resolve / iframe).
+ * Does not create the player iframe (avoids empty-session race).
+ * Does NOT unload the original player — only CSS hide + park.
+ * Idempotent when shell already active.
+ */
+export function showImmediateCover() {
+  ensureStyles();
+  startLayoutTracking();
+
+  let elRoot = getRoot();
+  // Iframe already running — only assert host classes; never remount
+  if (elRoot?.querySelector(`#${IFRAME_ID}`) || getIframe()) {
+    elRoot?.classList.add(ROOT_ACTIVE_CLASS);
+    setHostActive(true);
+    return;
+  }
+
+  const alreadyMounted = Boolean(elRoot)
+    && elRoot.classList.contains(ROOT_ACTIVE_CLASS)
+    && Boolean(document.getElementById(OVERLAY_ID));
+
+  if (!elRoot) {
+    elRoot = document.createElement("div");
+    elRoot.id = ROOT_ID;
+    mountRoot(elRoot);
+  } else {
+    mountRoot(elRoot);
+  }
+
+  let elOverlay = document.getElementById(OVERLAY_ID);
+  if (!elOverlay) {
+    elOverlay = document.createElement("div");
+    elOverlay.id = OVERLAY_ID;
+    elRoot.append(elOverlay);
+  }
+
+  elRoot.classList.add(ROOT_ACTIVE_CLASS);
+  setHostActive(true);
+  if (!alreadyMounted) {
+    syncRootLayout();
+  }
+}
+
+/**
+ * Lightweight re-assert: YT sometimes strips classes on ad transitions.
+ * No DOM scrubbing, no MutationObserver (those locked the page on load).
+ */
+function startCoverEnforcer() {
+  if (coverEnforcerId) {
+    return;
+  }
+  coverEnforcerId = window.setInterval(() => {
+    const elMovie = document.getElementById("movie_player");
+    if (elMovie && !elMovie.classList.contains(HOST_ACTIVE_CLASS)) {
+      markPlayerHosts();
+    }
+    const elRoot = getRoot();
+    if (elRoot && !elRoot.classList.contains(ROOT_ACTIVE_CLASS)) {
+      elRoot.classList.add(ROOT_ACTIVE_CLASS);
+    }
+  }, 2_000);
+}
+
+function stopCoverEnforcer() {
+  if (coverEnforcerId) {
+    window.clearInterval(coverEnforcerId);
+    coverEnforcerId = 0;
+  }
 }
 
 export function ensureStyles() {
-  if (document.getElementById(STYLE_ID)) {
+  const elExisting = document.getElementById(STYLE_ID);
+  if (elExisting instanceof HTMLStyleElement) {
+    // Always refresh so extension reloads pick up CSS fixes without a full YT hard refresh
+    elExisting.textContent = BUTTON_CSS;
     return;
   }
 
@@ -467,14 +638,26 @@ export function ensureOverlay(
   callbacks: {
     onDestroy: () => void;
     onIframeCreated: () => void;
+  },
+  options?: {
+    /** When false, iframe starts with wants-play (Always Ad-Free autoplay). Default true. */
+    startPaused?: boolean;
   }
 ): boolean {
   ensureStyles();
   startLayoutTracking();
+  const startPaused = options?.startPaused !== false;
 
   let elRoot = getRoot();
   let elIframe = getIframe();
   let elOverlay = document.getElementById(OVERLAY_ID);
+
+  // Legacy in-host root (pre-fixed overlay): drop empty shell so we remount on <html>
+  if (elRoot && !elIframe && elRoot.parentElement && elRoot.parentElement !== document.documentElement) {
+    elRoot.remove();
+    elRoot = null;
+    elOverlay = null;
+  }
 
   if (elRoot && elIframe?.dataset.videoId === videoId && elOverlay) {
     if (!document.getElementById(BUTTON_ID)) {
@@ -495,9 +678,8 @@ export function ensureOverlay(
   if (!elRoot) {
     elRoot = document.createElement("div");
     elRoot.id = ROOT_ID;
-    // Mount inside host before iframe so we never need to reparent
     mountRoot(elRoot);
-  } else {
+  } else if (!elIframe) {
     mountRoot(elRoot);
   }
 
@@ -509,15 +691,16 @@ export function ensureOverlay(
 
   let didCreateIframe = false;
   if (!elIframe) {
-    // Ensure in-host mount before first iframe load
+    // Last chance to sit inside host before first iframe load
     mountRoot(elRoot);
     elIframe = document.createElement("iframe");
     elIframe.id = IFRAME_ID;
     elIframe.dataset.videoId = videoId;
     elIframe.allow = "autoplay; fullscreen; picture-in-picture";
     elIframe.allowFullscreen = true;
+    const pausedFlag = startPaused ? "1" : "0";
     elIframe.src = browser.runtime.getURL(
-      `/${AD_FREE_PLAYER_PATH}?v=${encodeURIComponent(videoId)}&embed=1&t=${encodeURIComponent(String(startAt))}&paused=1` as `/ad-free-player.html${string}`
+      `/${AD_FREE_PLAYER_PATH}?v=${encodeURIComponent(videoId)}&embed=1&t=${encodeURIComponent(String(startAt))}&paused=${pausedFlag}` as `/ad-free-player.html${string}`
     );
     elOverlay.append(elIframe);
     callbacks.onIframeCreated();
@@ -534,6 +717,7 @@ export function ensureOverlay(
 
 export function destroyOverlay() {
   stopLayoutTracking();
+  stopCoverEnforcer();
   document.getElementById(ROOT_ID)?.remove();
   setHostActive(false);
 }

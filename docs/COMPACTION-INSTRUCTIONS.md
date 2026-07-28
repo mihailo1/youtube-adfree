@@ -1,44 +1,64 @@
-# Compaction instructions (Grok `/compact`)
+# Compaction instructions (yt-addfree only)
 
-Paste the block below when compacting this project’s agent session.
-
----
-
-## Ready-to-paste block
-
-```
-Compaction instructions for this session:
-
-PROJECTS
-- Primary: yt-addfree v1.1.1 at ~/Documents/reps.nosync/yt-addfree (WXT + Vidstack + TS). Shipped on main/GitHub.
-- Secondary: filler Smart Autofill ~/Documents/reps.nosync/filler — v1.4.1 pushed. Do not re-implement unless asked.
-
-MUST READ ON RESUME
-- yt-addfree/docs/SESSION-NOTES.md
-- yt-addfree/CLAUDE.md
-- Optional: docs/CONTINUE-PROMPT.md, docs/mse-phase2.md, ARCHITECTURE.md
-
-KEEP (do not drop)
-1) Architecture: CS = overlay/toggle only; player = iframe; single-rendition PlaybackEngine + quality-menu (NEVER multi-src Vidstack); youtube-park (park + unload media + reload on disable); page-proxy InnerTube; bridge event.source checks.
-2) Chapters: chapters.ts + VTT; mergePageChapters; scrubber segments ~3px; laconic menu close-on-select; chapter title in controls.
-3) Storage: BG setAccessLevel TRUSTED_AND_UNTRUSTED + StoreAdFreeStreamPayload; option isAdFreeDefault (Always Ad-Free, default false) via default-pref + ⚙ settings inject (default-menu-item: single click path, no double-fire) + popup.
-4) UI: never transparent .vds-slider-track under chapters; time-group margin 20px both sides; top chips hide with controls idle (controls-visible + ytp-autohide); preserve wasPlaying on switch.
-5) MSE: mediaSource.duration always; full MediaSource reload scrub; init cache; ensureAvPlayable extend-first; no 2% sidx audio bias; restoreMsePlayhead on t→0 mid-buffer.
-6) User rules: no DevTools for end users; agent pnpm build (nvm use 20) after extension code changes.
-7) Version 1.1.1 — Always Ad-Free toggle fix shipped; optional live verify remaining.
-
-DROP / compress
-- Full MSE log dumps once root causes are summarized above.
-- Filler detail beyond v1.4.1 pushed.
-- Intermediate dead-end CSS/MSE attempts fully replaced by fixes above.
-
-AFTER COMPACT assume SESSION-NOTES.md is current; ask only if task is unclear.
-```
+Paste into `/compact` or use as the compact summary seed.
 
 ---
 
-## How to use in Grok
+## Scope
 
-1. `/compact` or `/compact [extra focus]` when context is large  
-2. Optionally paste the block above as compaction instructions  
-3. Resume: *Read `docs/SESSION-NOTES.md` then &lt;task&gt;*
+**Only** `~/Documents/reps.nosync/yt-addfree` (YouTube Ad-Free extension). Ignore filler/other projects.
+
+## Version / git
+
+- **v1.2.1** (hotkeys, quality submenu, session logs, chapters late-merge, Always boot, alpha pack)
+- Prior pushed baseline: **v1.1.1** (Always Ad-Free toggle fix); **v1.1.0** MSE/chapters
+
+## Must preserve
+
+1. **Architecture**
+   - WXT MV3; Vidstack single-rendition + `PlaybackEngine` + MSE dual SourceBuffer
+   - page-proxy ANDROID_VR resolve (extension-origin 403)
+   - youtube-park park → unload after ready → reload on disable
+   - Overlay root **fixed on `document.documentElement`**, not inside `#movie_player`
+   - Never reparent ad-free iframe after create
+
+2. **v1.2.x product**
+   - Hotkeys, quality-pref, quality **Settings submenu** (no floating chip)
+   - Always Ad-Free early-hide + preferPlay + resolve retry without unpark
+   - Session log export: popup Settings → Diagnostics
+   - Chapters: videoId + duration fit; late `set-chapters` bridge
+   - Logs: default **info**, no STAGE
+
+3. **Build**
+   - `nvm use 20 && pnpm build` → `.output/chrome-mv3/`
+   - Alpha: `pnpm run alpha:pack` → zip + `docs/ALPHA-TESTING.md`
+
+4. **Docs**
+   - `docs/SESSION-NOTES.md` (source of truth)
+   - `docs/CONTINUE-PROMPT.md`, `docs/ALPHA-TESTING.md`
+   - `docs/mse-phase3.md` draft **deferred**
+   - Optional: `docs/mse-overview.md`, phase1/2
+
+5. **Invariants** — see SESSION-NOTES “Invariants”
+
+## Drop from compact
+
+- Full STAGE timelines / console spam once summarized
+- Intermediate flicker debug iterations (keep final overlay + boot rules)
+- MSE Phase 3 implementation detail until started
+
+## After compact — optional next
+
+1. Alpha feedback  
+2. MSE Phase 3 if scrub latency is the goal  
+3. Chapters edge cases if still empty after late merge  
+
+## Paste block
+
+```
+COMPACT yt-addfree only @ ~/Documents/reps.nosync/yt-addfree v1.2.1.
+
+Keep: fixed overlay on documentElement; Always Ad-Free boot (early-hide, resolve retry no unpark, preferPlay); single-rendition engine+MSE; quality Settings submenu; session Diagnostics export; chapters videoId-scoped + late set-chapters; no STAGE; build nvm20+pnpm build; alpha-pack docs/ALPHA-TESTING.md; mse-phase3 deferred.
+
+Read docs/SESSION-NOTES.md + CLAUDE.md. Ignore other projects.
+```

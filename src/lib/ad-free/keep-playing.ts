@@ -60,7 +60,7 @@ export function installKeepPlaying(options: KeepPlayingOptions = {}): KeepPlayin
       get: () => false
     });
     document.hasFocus = () => true;
-    log.info("visibility spoof installed");
+    log.debug("visibility spoof installed");
   } catch (error) {
     log.warn("visibility spoof failed", { error: String(error) });
   }
@@ -155,7 +155,7 @@ export function installKeepPlaying(options: KeepPlayingOptions = {}): KeepPlayin
       return;
     }
     lastResumeAt = now;
-    log.info(`resume (${reason})`, {
+    log.debug(`resume (${reason})`, {
       backgrounded: isBackgrounded(),
       hidden: getRealHidden()
     });
@@ -201,7 +201,7 @@ export function installKeepPlaying(options: KeepPlayingOptions = {}): KeepPlayin
 
   return {
     setWantsPlaying(value) {
-      log.info(`wantsPlaying=${value}`);
+      log.debug(`wantsPlaying=${value}`);
       wantsPlaying = value;
       if (value && isSafeToResume()) {
         resumePlayback("setWantsPlaying");
@@ -219,7 +219,7 @@ export function installKeepPlaying(options: KeepPlayingOptions = {}): KeepPlayin
       }
     },
     dispose() {
-      log.info("dispose");
+      log.debug("dispose");
       window.clearInterval(pollId);
       HTMLMediaElement.prototype.pause = originalPause;
       window.removeEventListener("focus", onFocus);

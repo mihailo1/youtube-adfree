@@ -1,16 +1,23 @@
 /**
- * Ad-Free diagnostic logger.
+ * Ad-Free diagnostic logger (alpha-friendly).
  *
- * Console: filter by `[ytdl-af]`
- * Dump ring buffer: `window.__ytdlAfLog.dump()` / `.copy()` / `.clear()`
- * Toggle: `window.__ytdlAfLog.setEnabled(true|false)`
- * Levels: debug | info | warn | error
+ * - Default level: **info** (debug is silent unless raised)
+ * - Ring buffer in each context + forward to background **session log**
+ * - Export from popup Settings → Diagnostics
+ * - DevTools (optional): `__ytdlAfLog.copy()` / `.dump()` / `.clear()`
  *
- * Enabled by default in the player iframe; content script reads
- * `localStorage.ytdlAfDebug` ("0" to disable).
+ * Console filter: `[ytdl-af]`
  */
 
-export type AdFreeLogLevel = "debug" | "info" | "warn" | "error";
+import {
+  compactLogData,
+  detectLogContext,
+  type SessionLogEntry,
+  type SessionLogLevel
+} from "@/lib/ad-free/session-log";
+import { MessageType, sendMessage } from "@/lib/messaging/messaging";
+
+export type AdFreeLogLevel = SessionLogLevel;
 
 export type AdFreeLogEntry = {
   timestamp: number;
@@ -19,9 +26,10 @@ export type AdFreeLogEntry = {
   scope: string;
   message: string;
   data?: unknown;
+  context?: string;
 };
 
-const RING_MAX = 800;
+const RING_MAX = 400;
 const PREFIX = "[ytdl-af]";
 
 const LEVEL_RANK: Record<AdFreeLogLevel, number> = {
@@ -55,13 +63,24 @@ function readEnabledDefault(): boolean {
   } catch {
     // ignore
   }
-  // On by default so 1080p stalls are diagnosable without extra setup
+  // On for alpha diagnostics (session export)
   return true;
 }
 
 const ring: AdFreeLogEntry[] = [];
 let isEnabled = readEnabledDefault();
-let minLevel: AdFreeLogLevel = "debug";
+/** Alpha default: info — skip noisy debug chatter. */
+let minLevel: AdFreeLogLevel = "info";
+const logContext = detectLogContext();
+
+/** Background SW installs this so logs never self-message. */
+let sessionSink: ((entry: SessionLogEntry) => void) | null = null;
+
+export function setAdFreeSessionLogSink(
+  sink: ((entry: SessionLogEntry) => void) | null
+) {
+  sessionSink = sink;
+}
 
 function pushEntry(entry: AdFreeLogEntry) {
   ring.push(entry);
@@ -87,11 +106,36 @@ function toConsole(level: AdFreeLogLevel, line: string, data?: unknown) {
   console.debug(...args);
 }
 
+function forwardToSession(entry: AdFreeLogEntry) {
+  const sessionEntry: SessionLogEntry = {
+    timestamp: entry.timestamp,
+    iso: entry.iso,
+    level: entry.level,
+    scope: entry.scope,
+    message: entry.message,
+    data: compactLogData(entry.data),
+    context: entry.context ?? logContext
+  };
+
+  if (sessionSink) {
+    sessionSink(sessionEntry);
+    return;
+  }
+
+  try {
+    void sendMessage(MessageType.AdFreeLogAppend, { entry: sessionEntry }).catch(() => {
+      // SW sleeping / no receiver — local ring still has the line
+    });
+  } catch {
+    // ignore
+  }
+}
+
 export function adFreeLog(
   scope: string,
   message: string,
   data?: unknown,
-  level: AdFreeLogLevel = "debug"
+  level: AdFreeLogLevel = "info"
 ) {
   if (!isEnabled) {
     return;
@@ -107,12 +151,21 @@ export function adFreeLog(
     level,
     scope,
     message,
-    data
+    data,
+    context: logContext
   };
   pushEntry(entry);
+  forwardToSession(entry);
 
-  const line = `${PREFIX} ${scope} ${message}`;
-  toConsole(level, line, data);
+  // Console: short line; data only for warn/error to keep DevTools calm
+  const line = `${PREFIX} ${scope}: ${message}`;
+  if (level === "warn" || level === "error") {
+    toConsole(level, line, data);
+  } else if (data === undefined) {
+    toConsole(level, line);
+  } else {
+    toConsole(level, line, data);
+  }
 }
 
 export function createAdFreeLogger(scope: string) {
@@ -194,6 +247,15 @@ export function mediaSnapshot(media: HTMLMediaElement | null | undefined) {
   };
 }
 
+function formatRingText(): string {
+  return ring
+    .map(entry => {
+      const payload = entry.data === undefined ? "" : ` ${compactLogData(entry.data) ?? ""}`;
+      return `${entry.iso} ${entry.level.toUpperCase()} ${entry.scope} ${entry.message}${payload}`;
+    })
+    .join("\n");
+}
+
 function installGlobalApi() {
   const api: LogApi = {
     get enabled() {
@@ -215,18 +277,13 @@ function installGlobalApi() {
       return ring.slice();
     },
     text() {
-      return ring
-        .map(entry => {
-          const payload = entry.data === undefined ? "" : ` ${JSON.stringify(entry.data)}`;
-          return `${entry.iso} ${entry.level.toUpperCase()} ${entry.scope} ${entry.message}${payload}`;
-        })
-        .join("\n");
+      return formatRingText();
     },
     async copy() {
       const body = api.text();
       try {
         await navigator.clipboard.writeText(body);
-        console.info(`${PREFIX} log copied (${ring.length} entries)`);
+        console.info(`${PREFIX} local log copied (${ring.length} lines)`);
       } catch (error) {
         console.warn(`${PREFIX} clipboard failed`, error);
         console.info(body);
@@ -242,14 +299,13 @@ function installGlobalApi() {
       } catch {
         // ignore
       }
-      console.info(`${PREFIX} logging ${value ? "enabled" : "disabled"}`);
+      console.info(`${PREFIX} logging ${value ? "on" : "off"}`);
     },
     setMinLevel(level: AdFreeLogLevel) {
       minLevel = level;
     }
   };
 
-  // Attach on every common global — extension contexts differ (window / globalThis / self)
   const hosts: unknown[] = [globalThis];
   try {
     if (typeof window !== "undefined") {
@@ -281,19 +337,10 @@ function installGlobalApi() {
       // ignore
     }
   }
-
-  console.info(
-    `${PREFIX} log API ready — in DevTools pick the ad-free-player iframe context, then: __ytdlAfLog.copy()`
-  );
 }
 
 installGlobalApi();
 
 export function getAdFreeLogText(): string {
-  return ring
-    .map(entry => {
-      const payload = entry.data === undefined ? "" : ` ${JSON.stringify(entry.data)}`;
-      return `${entry.iso} ${entry.level.toUpperCase()} ${entry.scope} ${entry.message}${payload}`;
-    })
-    .join("\n");
+  return formatRingText();
 }

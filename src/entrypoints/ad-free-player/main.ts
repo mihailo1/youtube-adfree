@@ -28,7 +28,6 @@ import {
   type PlaybackEngine
 } from "@/lib/ad-free/playback-engine";
 import { qualitySupportsMse } from "@/lib/ad-free/mse/mse-controller";
-import { createQualityMenu } from "@/lib/ad-free/quality-menu";
 import { installDefaultMenuItem } from "@/lib/ad-free/default-menu-item";
 import {
   type AdFreeChapter,
@@ -44,6 +43,13 @@ import {
 } from "@/lib/ad-free/resolve-stream";
 import { buildStoryboardThumbs } from "@/lib/ad-free/storyboard";
 import { readInitialTime } from "@/lib/ad-free/youtube-time";
+import { installHotkeys } from "@/lib/ad-free/hotkeys";
+import {
+  getAdFreeQualityPref,
+  pickQualityFromPreference,
+  setAdFreeQualityPref
+} from "@/lib/ad-free/quality-pref";
+import { createPlayerToast } from "@/lib/ad-free/player-toast";
 import { MessageType, sendMessage } from "@/lib/messaging/messaging";
 
 const log = createAdFreeLogger("player");
@@ -122,6 +128,11 @@ function appendChapterTrack(
     return null;
   }
 
+  // Replace any prior chapters track (late attach after Always Ad-Free race)
+  elProvider.querySelectorAll("track#ytdl-chapters, track[kind='chapters']").forEach(el => {
+    el.remove();
+  });
+
   const vtt = chaptersToWebVtt(normalized);
   const blobUrl = URL.createObjectURL(new Blob([vtt], { type: "text/vtt" }));
   const elTrack = document.createElement("track");
@@ -165,7 +176,10 @@ function isBridgeToPlayer(data: unknown): data is AdFreeBridgeToPlayer {
 function wireBridge(
   engine: PlaybackEngine,
   videoId: string,
-  keepPlaying: KeepPlayingController | null
+  keepPlaying: KeepPlayingController | null,
+  options?: {
+    onSetChapters?: (chapters: AdFreeChapter[]) => void;
+  }
 ) {
   function handler(event: MessageEvent) {
     if (event.source !== window.parent) {
@@ -195,6 +209,20 @@ function wireBridge(
     if (message.action === "pause") {
       keepPlaying?.setWantsPlaying(false);
       engine.pause();
+      return;
+    }
+
+    if (message.action === "set-chapters") {
+      if (message.videoId !== videoId) {
+        return;
+      }
+      const chapters = (message.chapters ?? []).filter(
+        (item): item is AdFreeChapter =>
+          typeof item?.startSeconds === "number"
+          && typeof item?.endSeconds === "number"
+          && typeof item?.title === "string"
+      );
+      options?.onSetChapters?.(chapters);
       return;
     }
 
@@ -241,6 +269,8 @@ function renderPlayer(
     isEmbed: boolean;
     initialTime: number;
     startPaused: boolean;
+    preferredQualityHeight?: number | null;
+    preferProgressive?: boolean | null;
   }
 ) {
   const { isEmbed, initialTime, startPaused } = options;
@@ -261,12 +291,24 @@ function renderPlayer(
   const orderedForMenu = orderQualitiesForMenu(
     playableQualities.length > 0 ? playableQualities : qualities
   );
-  // Prefer MSE default over stored progressive (session often still has p-18 selected)
+  // Remembered quality (local) > session selected MSE > pickDefaultQuality
+  const remembered = pickQualityFromPreference(
+    orderedForMenu,
+    options.preferredQualityHeight && options.preferredQualityHeight > 0
+      ? {
+        height: options.preferredQualityHeight,
+        preferProgressive: options.preferProgressive === true,
+        updatedAt: 0
+      }
+      : null
+  );
   const preferredDefault = pickDefaultQuality(orderedForMenu);
   const stored = orderedForMenu.find(item => item.id === payload.selectedQualityId);
-  const initialQuality = stored && qualitySupportsMse(stored)
-    ? stored
-    : preferredDefault ?? stored ?? orderedForMenu[0];
+  const initialQuality = remembered
+    ?? (stored && qualitySupportsMse(stored) ? stored : null)
+    ?? preferredDefault
+    ?? stored
+    ?? orderedForMenu[0];
 
   if (!/^https?:\/\//i.test(initialQuality.videoUrl)) {
     renderError(elContainer, "No valid stream URLs found");
@@ -308,7 +350,7 @@ function renderPlayer(
 
   const elProvider = document.createElement("media-provider");
   appendCaptionTracks(elProvider, payload.captions ?? []);
-  const chapterBlobUrl = appendChapterTrack(
+  let chapterBlobUrl = appendChapterTrack(
     elProvider,
     payload.chapters ?? [],
     payload.durationSeconds > 0 ? payload.durationSeconds : 0
@@ -322,53 +364,102 @@ function renderPlayer(
     log.debug("no chapters — continuous progress bar");
   }
 
+  function applyChapters(chapters: AdFreeChapter[]) {
+    if (chapters.length < 2) {
+      return;
+    }
+    if (chapterBlobUrl) {
+      try {
+        URL.revokeObjectURL(chapterBlobUrl);
+      } catch {
+        // ignore
+      }
+    }
+    chapterBlobUrl = appendChapterTrack(
+      elProvider,
+      chapters,
+      payload.durationSeconds > 0 ? payload.durationSeconds : 0
+    );
+    if (chapterBlobUrl) {
+      // Empty title so default layout shows media-chapter-title
+      elPlayer.removeAttribute("title");
+      log.info("chapters track ready (late)", {
+        count: chapters.length,
+        first: chapters[0]?.title?.slice(0, 60)
+      });
+    }
+  }
+
   const elLayout = document.createElement("media-video-layout");
   // Always show chapter segments when a chapters track is present (embed can be narrow).
   (elLayout as HTMLElement & { sliderChaptersMinWidth?: number }).sliderChaptersMinWidth = 0;
   // Keep settings/chapters menus portaled inside player-wrap (not document.body)
   // so our Always Ad-Free row and CSS stay reachable.
   (elLayout as HTMLElement & { menuContainer?: string | HTMLElement | null }).menuContainer = elPlayerWrap;
-  // YouTube storyboard sprites → scrubber hover preview (not a single poster frame)
-  const storyboardThumbs = buildStoryboardThumbs({
-    spec: payload.storyboardSpec,
-    durationSeconds: payload.durationSeconds > 0 ? payload.durationSeconds : 0
-  });
-  if (storyboardThumbs.length > 0) {
-    // Vidstack DefaultLayout accepts ThumbnailImageInit[]
-    (elLayout as HTMLElement & { thumbnails?: unknown }).thumbnails = storyboardThumbs;
-    log.info("storyboard thumbs ready", {
-      frames: storyboardThumbs.length,
-      firstUrl: storyboardThumbs[0]?.url?.slice(0, 80)
-    });
-  } else {
-    log.debug("no storyboard spec — scrubber preview unavailable");
-  }
+  // Storyboard attached after first media ready — expanding 800+ frames blocks first paint
+  // and felt like a second "reload" (loading → blank player → spinner).
   elPlayer.append(elProvider, elLayout);
   elPlayerWrap.append(elPlayer);
 
   // Revoke chapter VTT blob when the player page unloads
-  if (chapterBlobUrl) {
-    window.addEventListener(
-      "pagehide",
-      () => {
-        try {
-          URL.revokeObjectURL(chapterBlobUrl);
-        } catch {
-          // ignore
-        }
-      },
-      { once: true }
-    );
-  }
+  window.addEventListener(
+    "pagehide",
+    () => {
+      if (!chapterBlobUrl) {
+        return;
+      }
+      try {
+        URL.revokeObjectURL(chapterBlobUrl);
+      } catch {
+        // ignore
+      }
+    },
+    { once: true }
+  );
 
-  // Minimal single-ring loader (Vidstack native spinner is CSS-hidden)
+  // Minimal single-ring loader (Vidstack native spinner is CSS-hidden).
+  // Bootstrapping: solid cover until first loadQuality resolves — one continuous spinner
+  // instead of Loading page → empty chrome → spinner again.
   const elLoader = document.createElement("div");
   elLoader.className = "ytdl-loader";
-  elLoader.setAttribute("aria-hidden", "true");
+  elLoader.setAttribute("aria-hidden", "false");
   elLoader.innerHTML = "<div class=\"ytdl-loader-ring\" role=\"presentation\"></div>";
   elPlayerWrap.append(elLoader);
+  elPlayerWrap.classList.add("is-buffering", "is-bootstrapping");
 
   let engine: PlaybackEngine | null = null;
+  let isBootstrapping = true;
+
+  function attachStoryboardWhenIdle() {
+    if (!payload.storyboardSpec) {
+      return;
+    }
+    const run = () => {
+      try {
+        const storyboardThumbs = buildStoryboardThumbs({
+          spec: payload.storyboardSpec,
+          durationSeconds: payload.durationSeconds > 0 ? payload.durationSeconds : 0
+        });
+        if (storyboardThumbs.length === 0) {
+          return;
+        }
+        (elLayout as HTMLElement & { thumbnails?: unknown }).thumbnails = storyboardThumbs;
+        log.info("storyboard thumbs ready (deferred)", {
+          frames: storyboardThumbs.length,
+          firstUrl: storyboardThumbs[0]?.url?.slice(0, 80)
+        });
+      } catch (error) {
+        log.warn("storyboard attach failed", {
+          message: error instanceof Error ? error.message : String(error)
+        });
+      }
+    };
+    if (typeof requestIdleCallback === "function") {
+      requestIdleCallback(() => run(), { timeout: 2_500 });
+    } else {
+      window.setTimeout(run, 0);
+    }
+  }
 
   const keepPlaying = isEmbed
     ? installKeepPlaying({
@@ -379,9 +470,13 @@ function renderPlayer(
     })
     : null;
 
-  const qualityMenuHolder: { current: ReturnType<typeof createQualityMenu> | null } = {
+  const settingsExtrasHolder: {
+    current: ReturnType<typeof installDefaultMenuItem> | null;
+  } = {
     current: null
   };
+
+  const toast = createPlayerToast(elPlayerWrap);
 
   engine = createPlaybackEngine({
     elPlayer,
@@ -393,13 +488,16 @@ function renderPlayer(
       : undefined,
     onStateChange(state) {
       const busy = state === "loading" || state === "switching" || state === "seeking";
-      elPlayerWrap.classList.toggle("is-buffering", busy);
+      // During bootstrap keep spinner until first ready (ignore brief ready→busy flicker)
+      const showLoader = isBootstrapping || busy;
+      elPlayerWrap.classList.toggle("is-buffering", showLoader);
       elPlayerWrap.dataset.engineState = state;
-      elLoader.setAttribute("aria-hidden", busy ? "false" : "true");
+      elLoader.setAttribute("aria-hidden", showLoader ? "false" : "true");
     },
     onQualityChange(quality) {
-      qualityMenuHolder.current?.setSelected(quality.id);
+      settingsExtrasHolder.current?.setSelectedQuality(quality.id);
       persistSelected(videoId, payload, quality.id);
+      void setAdFreeQualityPref(quality);
       const elBadge = document.getElementById("quality-badge");
       if (elBadge) {
         elBadge.textContent = quality.label;
@@ -412,18 +510,20 @@ function renderPlayer(
     }
   });
 
-  const qualityMenu = createQualityMenu(
-    orderedForMenu,
-    initialQuality.id,
-    quality => {
+  // Persist initial selection too (first visit after pref empty)
+  void setAdFreeQualityPref(initialQuality);
+
+  // Settings ⚙: Always Ad-Free + Quality (chip removed — missing in fullscreen)
+  const defaultMenuItem = installDefaultMenuItem(elPlayer as unknown as HTMLElement, {
+    qualities: orderedForMenu,
+    selectedQualityId: initialQuality.id,
+    onQualitySelect(quality) {
       if (!engine) {
         return;
       }
       const resumeAt = engine.getLastKnownGoodTime() > 0
         ? engine.getLastKnownGoodTime()
         : Number(elPlayer.currentTime ?? 0) || 0;
-      // YouTube always continues after quality change — pausing first then switching
-      // used to load with minAhead=0.6 and underrun immediately on play.
       const wasPlaying = true;
       log.info("quality menu select", {
         id: quality.id,
@@ -432,14 +532,11 @@ function renderPlayer(
         wasPlaying,
         busy: engine.isBusy()
       });
+      void setAdFreeQualityPref(quality);
       void engine.loadQuality(quality, { resumeAt, wasPlaying });
     }
-  );
-  qualityMenuHolder.current = qualityMenu;
-  elPlayerWrap.append(qualityMenu.root);
-
-  // Settings menu: "Always Ad-Free" checkbox (persists to extension options)
-  const defaultMenuItem = installDefaultMenuItem(elPlayer as unknown as HTMLElement);
+  });
+  settingsExtrasHolder.current = defaultMenuItem;
 
   /**
    * Chapters menu: close root menu after picking a chapter (Vidstack keeps it open by default).
@@ -462,7 +559,7 @@ function renderPlayer(
     }
   }, true);
 
-  // Mirror controls idle → parent (Ad-Free chip) + close quality dropdown when chrome hides
+  // Mirror controls idle → parent (Ad-Free chip)
   if (isEmbed) {
     elPlayer.addEventListener("controls-change", event => {
       const detail = (event as CustomEvent<boolean>).detail;
@@ -474,9 +571,6 @@ function renderPlayer(
         action: "controls-visible",
         visible
       });
-      if (!visible) {
-        qualityMenu.close();
-      }
     });
   }
 
@@ -622,7 +716,7 @@ function renderPlayer(
       "media-menu, media-menu-button, media-menu-items, media-menu-portal, "
       + "media-time-slider, media-volume-slider, media-slider, "
       + ".vds-slider, .vds-time-slider, .vds-volume-slider, .vds-menu, .vds-menu-items, "
-      + ".quality-menu, input, select, textarea, "
+      + ".ytdl-quality-section, input, select, textarea, "
       + "media-mute-button, media-fullscreen-button, media-pip-button, "
       + "media-caption-button, media-live-button, media-seek-button, "
       + ".vds-mute-button, .vds-fullscreen-button, .vds-pip-button, "
@@ -647,9 +741,24 @@ function renderPlayer(
     }
   }, true);
 
+  // Engine is always assigned above; alias for non-null hotkey wiring
+  const activeEngine = engine!;
+
+  // YouTube-style hotkeys (j/l, arrows, m, f, c, 0–9, speed, frame step)
+  const hotkeys = installHotkeys({
+    elPlayer,
+    engine: activeEngine,
+    onPlayIntent: () => applyIntentionalPlay("hotkey"),
+    onPauseIntent: () => applyIntentionalPause("hotkey"),
+    onSeekFlash: delta => toast.showSeek(delta),
+    onSpeedFlash: rate => toast.show(`${rate}×`, { durationMs: 800 })
+  });
+
   let disposeBridge: (() => void) | null = null;
-  if (isEmbed && engine) {
-    disposeBridge = wireBridge(engine, videoId, keepPlaying);
+  if (isEmbed) {
+    disposeBridge = wireBridge(activeEngine, videoId, keepPlaying, {
+      onSetChapters: applyChapters
+    });
   }
 
   elShell.append(elPlayerWrap);
@@ -678,8 +787,8 @@ function renderPlayer(
     const mseCount = orderedForMenu.filter(item => qualitySupportsMse(item)).length;
     const mseHint = mseCount > 0 ? ` · MSE ${mseCount} adaptive` : "";
     elHint.textContent = orderedForMenu.length > 1
-      ? `Quality menu (top-right) / Captions in Settings${captionHint}${mseHint}`
-      : `Settings ⚙ → Captions${captionHint}${mseHint}`;
+      ? `Quality menu · Captions in Settings · hotkeys j/l/f/m${captionHint}${mseHint}`
+      : `Settings ⚙ → Captions · hotkeys j/l/f/m${captionHint}${mseHint}`;
 
     elMeta.append(elTitle, elChannel, elBadge, elHint);
     elShell.append(elMeta);
@@ -688,22 +797,60 @@ function renderPlayer(
 
   elContainer.replaceChildren(elShell);
 
-  log.info("renderPlayer", {
+  log.info("render", {
     videoId,
-    isEmbed,
-    initialTime,
-    startPaused,
     quality: initialQuality.label,
-    qualityCount: orderedForMenu.length,
-    progressive: initialQuality.isProgressive,
-    storyboard: Boolean(payload.storyboardSpec),
-    chapters: payload.chapters?.length ?? 0
+    t: Math.round(initialTime),
+    paused: startPaused
   });
 
+  // Honor paused=0 even for mid-file resume (old: && initialTime<=0 left Always Ad-Free black)
   void engine.loadQuality(initialQuality, {
     resumeAt: Math.max(0, initialTime),
-    wasPlaying: !startPaused && initialTime <= 0
-  }).then(() => {
+    wasPlaying: !startPaused
+  }).then(async () => {
+    // Keep solid black bootstrap until buffer is playable — avoids 0.7s flash then rebuffer
+    const elVideo = engine?.getVideoElement() ?? null;
+    const minRevealAhead = 1.5;
+    const revealDeadline = Date.now() + 4_000;
+    while (Date.now() < revealDeadline) {
+      const ahead = elVideo
+        ? (() => {
+          try {
+            const t = elVideo.currentTime;
+            const b = elVideo.buffered;
+            for (let i = 0; i < b.length; i += 1) {
+              if (t >= b.start(i) - 0.15 && t <= b.end(i) + 0.05) {
+                return b.end(i) - t;
+              }
+            }
+            return 0;
+          } catch {
+            return 0;
+          }
+        })()
+        : 0;
+      if (ahead >= minRevealAhead || !engine?.getWantsPlaying()) {
+        break;
+      }
+      await new Promise<void>(r => {
+        window.setTimeout(r, 80);
+      });
+    }
+
+    isBootstrapping = false;
+    elPlayerWrap.classList.remove("is-bootstrapping");
+    const stillBusy = engine?.isBusy() ?? false;
+    elPlayerWrap.classList.toggle("is-buffering", stillBusy);
+    elLoader.setAttribute("aria-hidden", stillBusy ? "false" : "true");
+    // Wait two frames so Vidstack control groups lay out before fade-in
+    // (otherwise buttons flash top-right then jump to bottom chrome)
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        elPlayerWrap.classList.add("is-chrome-ready");
+      });
+    });
+    attachStoryboardWhenIdle();
     if (isEmbed) {
       log.info("ready → parent");
       postToParent({ type: AD_FREE_BRIDGE_TYPE, action: "ready", videoId });
@@ -713,8 +860,9 @@ function renderPlayer(
   window.addEventListener("pagehide", () => {
     log.info("pagehide dispose");
     disposeBridge?.();
+    hotkeys.dispose();
+    toast.dispose();
     defaultMenuItem.dispose();
-    qualityMenu.dispose();
     engine?.dispose();
     keepPlaying?.dispose();
   }, { once: true });
@@ -745,7 +893,8 @@ async function init() {
   const videoId = params.get("v");
   const isEmbed = params.get("embed") === "1";
   const initialTime = readInitialTime(params);
-  const startPaused = params.get("paused") === "1" || isEmbed;
+  // paused=0 → play; paused=1 or missing → start paused (parent pushSnapshot may still play)
+  const startPaused = params.get("paused") !== "0";
 
   log.info("init", { videoId, isEmbed, initialTime, startPaused });
 
@@ -758,22 +907,20 @@ async function init() {
 
   try {
     const payload = await resolvePayload(videoId);
+    const qualityPref = await getAdFreeQualityPref();
     log.info("payload", {
-      title: payload.title,
-      qualities: payload.qualities.map(item => ({
-        id: item.id,
-        label: item.label,
-        progressive: item.isProgressive,
-        height: item.height
-      })),
+      title: payload.title?.slice(0, 80),
+      qualities: payload.qualities.length,
       selected: payload.selectedQualityId,
       captions: payload.captions.length,
-      storyboard: Boolean(payload.storyboardSpec)
+      qualityPref: qualityPref?.height ?? null
     });
     renderPlayer(elApp, payload, videoId, {
       isEmbed,
       initialTime,
-      startPaused
+      startPaused,
+      preferredQualityHeight: qualityPref?.height ?? null,
+      preferProgressive: qualityPref?.preferProgressive ?? null
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);

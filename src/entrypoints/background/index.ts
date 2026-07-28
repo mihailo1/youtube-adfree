@@ -3,6 +3,7 @@ import { registerChunkHandlers } from "./handlers/chunk-handlers";
 import { registerDownloadHandlers } from "./handlers/download-handlers";
 import { registerPipelineHandlers } from "./handlers/pipeline-handlers";
 import { ensureProcessor } from "./handlers/processor";
+import { registerSessionLogHandlers } from "./handlers/session-log-handlers";
 import { registerStorageHandlers } from "./handlers/storage-handlers";
 import { registerTabLifecycleHandlers } from "./handlers/tab-lifecycle";
 import { registerRecentDownloadsRetention } from "./recent/recent-downloads";
@@ -52,6 +53,7 @@ export default defineBackground(() => {
     sendMessageToTab(MessageType.SabrBodyReady, undefined, tabId).catch(() => {});
   });
 
+  registerSessionLogHandlers();
   registerAdFreeHandlers();
   registerChunkHandlers();
   registerDownloadHandlers();

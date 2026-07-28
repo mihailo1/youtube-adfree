@@ -1,6 +1,7 @@
 <script lang="ts">
   import AudioSubtitleSettings from "./sections/AudioSubtitleSettings.svelte";
   import CompletionSettings from "./sections/CompletionSettings.svelte";
+  import DiagnosticsSettings from "./sections/DiagnosticsSettings.svelte";
   import DownloadTypeSettings from "./sections/DownloadTypeSettings.svelte";
   import FormatSettings from "./sections/FormatSettings.svelte";
   import PlaylistSettings from "./sections/PlaylistSettings.svelte";
@@ -23,6 +24,7 @@
   <PlaylistSettings {options} />
   <AudioSubtitleSettings {options} slideDuration={SLIDE_DURATION} />
   <CompletionSettings {options} />
+  <DiagnosticsSettings />
 </div>
 
 <style>

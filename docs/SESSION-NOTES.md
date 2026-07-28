@@ -1,112 +1,111 @@
 # Session notes — Ad-Free player (2026-07-28)
 
-Source of truth after context compact. **v1.1.1** on `main` / GitHub.
+Source of truth after context compact. **v1.2.1** on `main`.
 
 ## Projects
 
 | Project | Path | Status |
 |---------|------|--------|
-| **yt-addfree** | `~/Documents/reps.nosync/yt-addfree` | **v1.1.1** on `main` / GitHub |
-| **filler** | `~/Documents/reps.nosync/filler` | Pushed (`v1.4.1`) |
+| **yt-addfree** | `~/Documents/reps.nosync/yt-addfree` | **v1.2.1** |
+| **filler** | out of scope this session | — |
 
 ---
 
-## v1.1.1 — Always Ad-Free toggle fix
+## v1.2.1 — Alpha / polish
 
-| Issue | Fix |
-|-------|-----|
-| ⚙ Settings → Always Ad-Free appeared but **always flipped back to Off** | Double-fire: `pointerup` on switch + `click` on row → `true` then immediate `false` |
-| Settings panel portaled outside player (earlier) | Document-wide inject + `menuContainer = #player-wrap`; styles not tied to `#player-wrap` only |
-| | Single click path, `pointer-events: none` on decorative checkbox, 350 ms debounce + busy guard |
+### Features
 
-**Files:** `src/lib/ad-free/default-menu-item.ts`, `main.ts` (`menuContainer`), `player.css`
+| Area | Detail |
+|------|--------|
+| **Hotkeys** | `hotkeys.ts` — YT-style Space/k, j/l, arrows, m/f/c, 0–9, speed, frame, PiP `i` |
+| **Quality memory** | `quality-pref.ts` → `local:adFreeQualityPref` |
+| **Quality in ⚙** | Submenu under Settings (no top-right chip; works fullscreen) |
+| **Always Ad-Free row** | Pill switch in Settings; re-inject survives Audio/Captions |
+| **Session diagnostics** | BG ring + popup Settings → **Diagnostics** Download/Copy/Clear |
+| **Simpler logs** | Default **info**; STAGE removed; forward to session log |
+| **Alpha pack** | `pnpm run alpha:pack` → `.output/youtube-adfree-*-chrome.zip` |
+| **Alpha docs** | `docs/ALPHA-TESTING.md` |
 
----
+### Always Ad-Free boot
 
-## v1.1.0 — what shipped
+| Problem | Fix |
+|---------|-----|
+| YT flash before cover | `document_start` + early-hide CSS from `localStorage.ytdlAfDefault` |
+| 403 page-proxy race | `resolveStreamWithRetry` + BG multi-round; keep cover, no unpark |
+| Double player-init | Overlay root **fixed on `documentElement`**, not `#movie_player` |
+| Black paused | `preferPlay` / `paused=0` / `wasPlaying:!startPaused` |
+| Rebuffer flash | Skip push-snapshot on fresh iframe |
 
-### A. YouTube chapters
-- `src/lib/ad-free/chapters.ts` — `markersMap` / engagementPanels / `chapterRenderer` → WebVTT
-- Payload + `mergePageChapters()` when ANDROID_VR omits markers
-- `<track kind="chapters">` + scrubber segments (~3px gaps) + controls show **current chapter title**
-- Laconic chapters menu (title + time chip; close on select)
+### Chapters (SPA-safe)
 
-### B. UI / chrome
-- Minimal red-ring spinner; Ad-Free chip + quality chip
-- Debug HUD removed
-- Volume ↔ time ↔ chapter title: **20px** equal gaps; `/` divider balanced
-- Top chips hide with controls idle (`controls-visible` bridge + `ytp-autohide`)
+- Extract scoped by `videoId` + duration fit (no cross-video leak)
+- **Late merge** after Always Ad-Free: retries 0.6–6s → bridge `set-chapters`
+- Files: `chapters.ts`, `bridge.ts` (`set-chapters`), `ad-free-watch` schedule, player `applyChapters`
 
-### C. Storage (no DevTools required)
-1. BG `storage.session.setAccessLevel(TRUSTED_AND_UNTRUSTED_CONTEXTS)`
-2. CS → `StoreAdFreeStreamPayload` message → BG writes session
+### Settings UI
 
-### D. MSE (adaptive avc1/av01)
-- Dual SourceBuffer; sidx time→byte; **full MediaSource reload** scrub outside buffer
-- Always set `mediaSource.duration` (else mid-file `currentTime→0` hang)
-- Init/sidx cache; parallel A/V init; skip moof-align on sidx
-- Mid: stop-on-first-buffer; dual-sidx parallel prefetch; **no 2% sidx audio bias**
-- `ensureAvPlayable` extends short track first (don’t clear good audio)
-- `restoreMsePlayhead` if playhead snaps to 0 while mid buffer exists
+- YouTube-ish panel: blur, 12px radius, translucent bg
+- Quality **submenu** (`media-menu`) with blur on expanded header
+- Menu extras re-inject while ⚙ open (Lit wipes children on submenu nav)
 
-### E. Always Ad-Free (default off)
-- Option `isAdFreeDefault` — player Settings checkbox + popup Integration
-- Auto-enable on `/watch` when on; manual switch to YouTube sticks for that videoId
-- Helpers: `default-pref.ts`, `default-menu-item.ts`
+### Overlay architecture
 
-### F. State + memory on switch
-- Keep-alive iframe; preserve **wasPlaying** / volume / time both ways
-- After Ad-Free ready: **`youtubePark.unload()`** — stopVideo + detach `<video>` src
-- Switch back: **`reload(videoId, t, { play, volume, … })`** via loadVideoById / cueVideoById
+- Root **`position: fixed` on `document.documentElement`**
+- `syncRootLayout()` mirrors `#movie_player` rect
+- Never reparent iframe after create
+- Session log: `session-log.ts` + BG handlers
 
-### G. Build
+### Key files (v1.2.x)
+
+```
+src/lib/ad-free/hotkeys.ts
+src/lib/ad-free/quality-pref.ts
+src/lib/ad-free/quality-menu.ts      # Settings submenu
+src/lib/ad-free/player-toast.ts
+src/lib/ad-free/session-log.ts
+src/lib/ad-free/debug-log.ts
+src/lib/ad-free/chapters.ts
+src/lib/ad-free/default-menu-item.ts
+src/lib/ad-free/content-overlay.ts
+src/entrypoints/ad-free-watch.content.ts
+src/entrypoints/ad-free-player/main.ts
+src/entrypoints/ad-free-player/player.css
+src/entrypoints/background/handlers/session-log-handlers.ts
+src/entrypoints/popup/settings/sections/DiagnosticsSettings.svelte
+docs/ALPHA-TESTING.md
+docs/mse-phase3.md                   # draft deferred
+```
+
+### Build
+
 ```bash
 cd ~/Documents/reps.nosync/yt-addfree
 nvm use 20
-pnpm build   # → .output/chrome-mv3/
-```
-
----
-
-## Key files
-
-```
-src/lib/ad-free/chapters.ts
-src/lib/ad-free/storyboard.ts
-src/lib/ad-free/content-overlay.ts
-src/lib/ad-free/quality-menu.ts
-src/lib/ad-free/default-pref.ts
-src/lib/ad-free/default-menu-item.ts
-src/lib/ad-free/playback-engine.ts
-src/lib/ad-free/youtube-park.ts          # park + unload + reload
-src/lib/ad-free/mse/*                    # dual-track MSE
-src/entrypoints/ad-free-player/main.ts
-src/entrypoints/ad-free-player/player.css
-src/entrypoints/ad-free-watch.content.ts
-src/entrypoints/background/index.ts
-src/entrypoints/background/handlers/ad-free-handlers.ts
-docs/SESSION-NOTES.md | CONTINUE-PROMPT.md | COMPACTION-INSTRUCTIONS.md
-docs/mse-*.md
+pnpm build          # → .output/chrome-mv3/
+pnpm run alpha:pack # zip for testers
 ```
 
 ---
 
 ## Invariants (do not break)
 
-1. **No multi-src Vidstack** — single-rendition engine + quality-menu only  
-2. **youtube-park** while Ad-Free active; **unload** after ready; **reload** on disable  
-3. **page-proxy** for InnerTube streams (extension-origin → 403)  
-4. **No end-user console / DevTools** steps  
-5. CS session storage only via background message  
-6. Agent rebuilds after src changes: `nvm use 20 && pnpm build`
+1. **No multi-src Vidstack** — single-rendition engine + quality menu  
+2. **youtube-park** while active; unload after ready; reload on disable  
+3. **page-proxy** for InnerTube  
+4. **Overlay root on documentElement (fixed)** — not inside `#movie_player`  
+5. **Never reparent iframe** after create  
+6. **No end-user DevTools** for storage  
+7. CS stream via **StoreAdFreeStreamPayload**  
+8. Rebuild: `nvm use 20 && pnpm build`  
+9. Chapters: videoId + duration fit; late merge OK  
 
 ---
 
 ## Open / optional later
 
-- [ ] Live verify: mid-open play, far scrub, chapter jump, default-on, unload/reload
-- [ ] True incremental MSE without full MediaSource reload
-- [ ] Autoplay polish when default-on lands mid-ad
+- [ ] **MSE Phase 3** (draft, deferred): incremental rebuffer — `docs/mse-phase3.md`  
+- [ ] Chapters still rare miss if YT never paints markers (API empty + no DOM)  
+- [ ] Alpha feedback loop  
 
 ---
 
@@ -114,6 +113,6 @@ docs/mse-*.md
 
 | Role | Steps |
 |------|--------|
-| End user | Load extension → YouTube → Ad-Free (or enable Always Ad-Free) |
-| After code change | `nvm use 20 && pnpm build` → reload unpacked → hard refresh YT |
-| Hot loop | `pnpm dev` |
+| End user / alpha | Unzip → Load unpacked → see `docs/ALPHA-TESTING.md` |
+| After code change | `nvm use 20 && pnpm build` → reload → **new** YT tab |
+| Session log | Popup → Settings → Diagnostics → Download log |

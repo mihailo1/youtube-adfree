@@ -292,13 +292,143 @@ export function normalizeChapters(
 }
 
 /**
+ * Prefer `videoDetails.videoId` on player-response-like blobs.
+ * Walk is depth-limited so we don't pick a random recommended video deeper in the tree.
+ */
+export function readVideoDetailsId(source: unknown, maxDepth = 6): string | null {
+  if (!source || maxDepth < 0) {
+    return null;
+  }
+  if (Array.isArray(source)) {
+    for (const item of source) {
+      const found = readVideoDetailsId(item, maxDepth - 1);
+      if (found) {
+        return found;
+      }
+    }
+    return null;
+  }
+  if (!isRecord(source)) {
+    return null;
+  }
+  if (isRecord(source.videoDetails) && typeof source.videoDetails.videoId === "string") {
+    return source.videoDetails.videoId;
+  }
+  // Common nests: playerResponse / playerData
+  for (const key of ["playerResponse", "playerData", "response"] as const) {
+    if (key in source) {
+      const found = readVideoDetailsId(source[key], maxDepth - 1);
+      if (found) {
+        return found;
+      }
+    }
+  }
+  return null;
+}
+
+function sourceBelongsToVideo(source: unknown, videoId: string): boolean {
+  if (!videoId) {
+    return true;
+  }
+  const detailsId = readVideoDetailsId(source);
+  if (detailsId) {
+    return detailsId === videoId;
+  }
+  // ytInitialData often has no top-level videoDetails but mentions the watch id.
+  try {
+    const json = JSON.stringify(source);
+    return json.includes(`"videoId":"${videoId}"`);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * When a large blob mentions several videos (recommended rail), still extract
+ * chapters if the result fits **this** duration. Prefer blobs that match videoId.
+ */
+function extractChaptersLoose(
+  source: unknown,
+  durationSeconds: number,
+  expectedVideoId?: string
+): AdFreeChapter[] {
+  if (!source) {
+    return [];
+  }
+  // Strict path first
+  if (expectedVideoId && sourceBelongsToVideo(source, expectedVideoId)) {
+    const strict = extractChaptersFromSource(source, durationSeconds, expectedVideoId);
+    if (strict.length >= 2) {
+      return strict;
+    }
+  }
+  // Fallback: pull markersMap / macroMarkers and keep only if they fit duration
+  const raw: RawChapter[] = [];
+  extractFromMarkersMap(source, raw);
+  if (raw.length < 2) {
+    extractFromMacroMarkers(source, raw);
+  }
+  if (raw.length < 2) {
+    extractLooseChapterRenderers(source, raw);
+  }
+  const normalized = normalizeChapters(raw, durationSeconds);
+  return finalizeChapters(normalized, durationSeconds);
+}
+
+/**
+ * Drop chapters that clearly belong to a different (usually longer) video.
+ */
+export function chaptersFitDuration(
+  chapters: AdFreeChapter[],
+  durationSeconds: number
+): boolean {
+  if (chapters.length < 2) {
+    return false;
+  }
+  if (!(durationSeconds > 0)) {
+    return true;
+  }
+  // Any chapter that starts well after the video ends is stale (wrong video).
+  for (const chapter of chapters) {
+    if (chapter.startSeconds > durationSeconds + 2) {
+      return false;
+    }
+  }
+  const lastStart = chapters[chapters.length - 1]?.startSeconds ?? 0;
+  // Whole chapter map is much longer than this video → wrong source.
+  if (lastStart > durationSeconds * 1.15 + 5) {
+    return false;
+  }
+  return true;
+}
+
+function finalizeChapters(
+  chapters: AdFreeChapter[],
+  durationSeconds: number
+): AdFreeChapter[] {
+  if (chapters.length < 2) {
+    return [];
+  }
+  if (!chaptersFitDuration(chapters, durationSeconds)) {
+    return [];
+  }
+  return chapters;
+}
+
+/**
  * Extract chapter list from any YouTube JSON blob (ytInitialData, playerResponse, …).
+ * Pass `expectedVideoId` after SPA navigation so leftover JSON from the previous
+ * watch is never reused.
  */
 export function extractChaptersFromSource(
   source: unknown,
-  durationSeconds = 0
+  durationSeconds = 0,
+  expectedVideoId?: string
 ): AdFreeChapter[] {
   if (!source) {
+    return [];
+  }
+  if (expectedVideoId && !sourceBelongsToVideo(source, expectedVideoId)) {
     return [];
   }
   const raw: RawChapter[] = [];
@@ -309,7 +439,7 @@ export function extractChaptersFromSource(
   if (raw.length < 2) {
     extractLooseChapterRenderers(source, raw);
   }
-  return normalizeChapters(raw, durationSeconds);
+  return finalizeChapters(normalizeChapters(raw, durationSeconds), durationSeconds);
 }
 
 function tryParseJsonObject(text: string): unknown | null {
@@ -322,13 +452,26 @@ function tryParseJsonObject(text: string): unknown | null {
 
 /**
  * Parse chapters from a script/HTML string (ytInitialData + ytInitialPlayerResponse).
+ * Prefer player response blobs that match `expectedVideoId`.
  */
-export function extractChaptersFromHtml(html: string, durationSeconds = 0): AdFreeChapter[] {
+export function extractChaptersFromHtml(
+  html: string,
+  durationSeconds = 0,
+  expectedVideoId?: string
+): AdFreeChapter[] {
+  if (expectedVideoId && !html.includes(expectedVideoId)) {
+    return [];
+  }
+
   const blobs: unknown[] = [];
-  for (const pattern of [...INITIAL_DATA_PATTERNS, ...PLAYER_RESPONSE_PATTERNS]) {
+  // Prefer player response first — tighter binding to the watched video.
+  for (const pattern of [...PLAYER_RESPONSE_PATTERNS, ...INITIAL_DATA_PATTERNS]) {
     const match = html.match(pattern);
     const jsonText = match?.[1];
     if (!jsonText) {
+      continue;
+    }
+    if (expectedVideoId && !jsonText.includes(expectedVideoId)) {
       continue;
     }
     const parsed = tryParseJsonObject(jsonText);
@@ -339,7 +482,7 @@ export function extractChaptersFromHtml(html: string, durationSeconds = 0): AdFr
 
   let best: AdFreeChapter[] = [];
   for (const blob of blobs) {
-    const chapters = extractChaptersFromSource(blob, durationSeconds);
+    const chapters = extractChaptersFromSource(blob, durationSeconds, expectedVideoId);
     if (chapters.length > best.length) {
       best = chapters;
     }
@@ -347,13 +490,140 @@ export function extractChaptersFromHtml(html: string, durationSeconds = 0): AdFr
   return best;
 }
 
+function parseClockToSeconds(text: string): number | null {
+  const cleaned = text.trim();
+  if (!cleaned) {
+    return null;
+  }
+  const parts = cleaned.split(":").map(part => Number(part));
+  if (parts.some(part => !Number.isFinite(part))) {
+    return null;
+  }
+  if (parts.length === 2) {
+    return parts[0] * 60 + parts[1];
+  }
+  if (parts.length === 3) {
+    return parts[0] * 3600 + parts[1] * 60 + parts[2];
+  }
+  return null;
+}
+
+function parseStartFromHref(href: string): number | null {
+  try {
+    const url = new URL(href, "https://www.youtube.com");
+    const t = url.searchParams.get("t") ?? url.searchParams.get("start");
+    if (!t) {
+      return null;
+    }
+    // "92s" | "92" | "1h2m3s"
+    if (/^\d+$/.test(t)) {
+      return Number(t);
+    }
+    if (/^\d+s$/i.test(t)) {
+      return Number(t.slice(0, -1));
+    }
+    const match = t.match(/^(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?$/i);
+    if (match) {
+      const hours = Number(match[1] ?? 0);
+      const minutes = Number(match[2] ?? 0);
+      const seconds = Number(match[3] ?? 0);
+      return hours * 3600 + minutes * 60 + seconds;
+    }
+  } catch {
+    // ignore
+  }
+  return null;
+}
+
 /**
- * Content-script safe: scan page scripts for chapter metadata.
+ * Chapters rendered in the current watch UI (updates on SPA nav; safer than scripts).
+ */
+function extractChaptersFromLiveDom(
+  doc: Document,
+  videoId: string,
+  durationSeconds: number
+): AdFreeChapter[] {
+  const flexy = doc.querySelector("ytd-watch-flexy");
+  if (flexy) {
+    const attrId = flexy.getAttribute("video-id");
+    if (attrId && attrId !== videoId) {
+      return [];
+    }
+  }
+
+  const items = doc.querySelectorAll(
+    "ytd-macro-markers-list-item-renderer, ytd-chapter-renderer"
+  );
+  const raw: RawChapter[] = [];
+
+  for (const item of items) {
+    if (!(item instanceof HTMLElement)) {
+      continue;
+    }
+    const link = item.querySelector("a[href]") as HTMLAnchorElement | null;
+    const href = link?.getAttribute("href") ?? "";
+    if (href && videoId && href.includes("v=") && !href.includes(videoId)) {
+      // Link points at another video — skip
+      continue;
+    }
+
+    let start = href ? parseStartFromHref(href) : null;
+    if (start == null) {
+      const timeEl = item.querySelector(
+        "#time, .yt-core-attributed-string, span.ytd-macro-markers-list-item-renderer"
+      );
+      // Prefer dedicated time nodes when present
+      const timeCandidates = item.querySelectorAll("#time, #time-stamp, .time, [id*='time']");
+      for (const node of timeCandidates) {
+        const parsed = parseClockToSeconds(node.textContent ?? "");
+        if (parsed != null) {
+          start = parsed;
+          break;
+        }
+      }
+      if (start == null && timeEl) {
+        start = parseClockToSeconds(timeEl.textContent ?? "");
+      }
+    }
+    if (start == null) {
+      continue;
+    }
+
+    const titleEl = item.querySelector(
+      "h4, #title, .yt-core-attributed-string, yt-formatted-string"
+    );
+    const title = (titleEl?.textContent ?? link?.textContent ?? "").trim();
+    if (!title || title === (item.querySelector("#time")?.textContent ?? "").trim()) {
+      continue;
+    }
+    pushChapter(raw, start, title);
+  }
+
+  return finalizeChapters(normalizeChapters(raw, durationSeconds), durationSeconds);
+}
+
+/**
+ * Content-script safe chapter extract for the **current** watch video only.
+ *
+ * SPA caveat: script tags often still hold the *previous* video's ytInitialData.
+ * Always pass `videoId`. Duration fit rejects maps from a different-length video.
+ *
+ * Always Ad-Free often runs before engagement panels hydrate — call again later.
  */
 export function extractChaptersFromDocument(
   doc: Document = document,
-  durationSeconds = 0
+  durationSeconds = 0,
+  videoId = ""
 ): AdFreeChapter[] {
+  // 1) Live DOM for this watch page (updates on SPA nav once panels paint)
+  if (videoId) {
+    const fromDom = extractChaptersFromLiveDom(doc, videoId, durationSeconds);
+    if (fromDom.length >= 2) {
+      return fromDom;
+    }
+  }
+
+  // 2) Script blobs that mention this videoId (or any chapter markers + duration fit)
   const scripts = doc.querySelectorAll("script");
   let best: AdFreeChapter[] = [];
 
@@ -362,18 +632,46 @@ export function extractChaptersFromDocument(
     if (!text) {
       continue;
     }
-    // Cheap prefilter
     if (
       !text.includes("markersMap")
       && !text.includes("chapterRenderer")
       && !text.includes("macroMarkersList")
       && !text.includes("DESCRIPTION_CHAPTERS")
+      && !text.includes("macroMarkersListItemRenderer")
     ) {
       continue;
     }
-    const chapters = extractChaptersFromHtml(text, durationSeconds);
-    if (chapters.length > best.length) {
-      best = chapters;
+    // Prefer scripts that mention the current id; still try others with duration fit
+    const mentionsId = !videoId || text.includes(videoId);
+    if (!mentionsId && best.length >= 2) {
+      continue;
+    }
+
+    for (const pattern of [...PLAYER_RESPONSE_PATTERNS, ...INITIAL_DATA_PATTERNS]) {
+      const match = text.match(pattern);
+      const jsonText = match?.[1];
+      if (!jsonText) {
+        continue;
+      }
+      if (videoId && !jsonText.includes(videoId) && !mentionsId) {
+        continue;
+      }
+      const parsed = tryParseJsonObject(jsonText);
+      if (!parsed) {
+        continue;
+      }
+      const chapters = videoId
+        ? extractChaptersLoose(parsed, durationSeconds, videoId)
+        : extractChaptersFromSource(parsed, durationSeconds);
+      if (chapters.length > best.length) {
+        best = chapters;
+      }
+    }
+
+    // Also try the whole script as one blob (some embeds omit ytInitial* assignment)
+    if (best.length < 2 && mentionsId) {
+      const parsed = tryParseJsonObject(text.trim().replace(/^[\s\S]*?=/, "").replace(/;?\s*$/, ""));
+      // skip fragile whole-script parse
     }
   }
 
@@ -381,8 +679,16 @@ export function extractChaptersFromDocument(
     return best;
   }
 
-  // Last resort: full HTML (can be heavy; only if nothing found)
-  return extractChaptersFromHtml(doc.documentElement?.innerHTML ?? "", durationSeconds);
+  // 3) Scoped HTML fallback only when the document string contains this videoId
+  if (videoId) {
+    const html = doc.documentElement?.innerHTML ?? "";
+    if (html.includes(videoId) && html.includes("markersMap")) {
+      // Extract only the playerResponse / initialData slices that mention this id
+      return extractChaptersFromHtml(html, durationSeconds, videoId);
+    }
+  }
+
+  return [];
 }
 
 export function isAdFreeChapter(value: unknown): value is AdFreeChapter {

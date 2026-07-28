@@ -11,7 +11,7 @@
 
 # Session docs
 
-- `docs/SESSION-NOTES.md` — latest work log (**v1.1.1**)
+- `docs/SESSION-NOTES.md` — latest work log (**v1.2.0**)
 - `docs/CONTINUE-PROMPT.md` — paste-ready agent prompt
 - `docs/COMPACTION-INSTRUCTIONS.md` — Grok `/compact` keep/drop block
 - Parent compact: `../SESSION-COMPACT.md`
@@ -20,7 +20,7 @@
 
 - Content script: `src/entrypoints/ad-free-watch.content.ts` — toggle + auto **Always Ad-Free** + iframe root **absolute inside `#movie_player`** (never reparent iframe after create — Chromium reloads document on move)
 - Player page: `src/entrypoints/ad-free-player/` — Vidstack shell + PlaybackEngine; `?embed=1` for in-page mode
-- Shared lib: `src/lib/ad-free/` — stream resolve, captions, **chapters**, storyboard, bridge, keep-playing, youtube-time, content-dom, content-overlay, content-yt-snapshot, content-bridge-client, **youtube-park**, **playback-engine**, **quality-menu**, **default-pref**, **default-menu-item**, **mse/**
+- Shared lib: `src/lib/ad-free/` — stream resolve, captions, **chapters**, storyboard, bridge, keep-playing, youtube-time, content-dom, content-overlay, content-yt-snapshot, content-bridge-client, **youtube-park**, **playback-engine**, **quality-menu**, **hotkeys**, **quality-pref**, **player-toast**, **default-pref**, **default-menu-item**, **mse/**
 - Background: `src/entrypoints/background/handlers/ad-free-handlers.ts` — resolve via page-proxy
 - Content script modules:
   - `content-dom.ts` — DOM IDs, YtPlayerEl type, DOM-lookup helpers
@@ -37,6 +37,10 @@
 - Prefer page-proxy for InnerTube; extension-origin fetch often gets HTTP 403
 - **Chapters:** extract from `markersMap` / engagementPanels (`chapters.ts`); merge from watch-page `ytInitialData` when ANDROID_VR omits them; attach as `<track kind="chapters">` VTT; ~3px scrubber gaps; laconic list closes on select; never set `.vds-slider-track { background: transparent }` under chapters
 - **Always Ad-Free:** `isAdFreeDefault` default **false**; row in ⚙ Settings via `default-menu-item.ts` (portaled panel inject; **single click + debounce** — do not wire both pointerup and click); auto-enable on watch; manual YouTube sticks for that videoId
+- **Hotkeys:** `hotkeys.ts` — YT-style keys on iframe `window` (single capture listener); seek flash via `player-toast.ts`
+- **Quality memory:** `quality-pref.ts` → `local:adFreeQualityPref` (height + preferProgressive); applied in `renderPlayer` before session/default pick
+- **Mid-ad / cover:** `setHostActive(true)` + park **before** stream resolve (hides ads/bezel/video); root `z-index: 10000`; hide `.ytp-bezel`, large play, all `ytp-ad-*`
+- **No Save chip in player** — use watch-page download button under the video
 - **MSE duration:** always set `mediaSource.duration` (hint + sidx) — missing duration causes mid-file `currentTime→0` hang on play
 - **MSE mid A/V:** `ensureAvPlayable` extends the short track first; do not clearBuffered audio when it already covers wall-clock seek target
 - **Playhead:** `restoreMsePlayhead` if playhead leaves buffered mid range (snap-to-0)
@@ -109,13 +113,14 @@ Never unlock audio before video is truly playing.
 - `deriveSelectedFields(selected)` in resolve-stream.ts — used in build/normalize/persist paths
 - `buildAdFreeStreamPayload` merges progressive + adaptive; default = best progressive else best adaptive
 
-# MSE (Phase 0–2)
+# MSE (Phase 0–3)
 
 - Overview: `docs/mse-overview.md`
 - Lib: `src/lib/ad-free/mse/` — `mse-controller`, `fragment-index` (sidx), `mp4-boxes`, `range-fetch`, `spike-player`
 - Spike: `mse-spike.html` — `docs/mse-spike.md`
 - Phase 1: engine MSE for adaptive avc1/av01 — `docs/mse-phase1.md`
 - Phase 2: sidx + full-reload scrub — `docs/mse-phase2.md`
+- Phase 3 (draft/planned): incremental rebuffer + init cache — `docs/mse-phase3.md`
 - Needs YouTube tab open for `ResolveAdFreeStream` page-proxy
 - Spike: `chrome-extension://<id>/mse-spike.html?v=VIDEO_ID`
 

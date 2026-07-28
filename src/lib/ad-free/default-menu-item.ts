@@ -1,8 +1,8 @@
 /**
- * Inject "Always Ad-Free" into the Vidstack Settings (⚙) menu.
+ * Inject Always Ad-Free + Quality submenu into the Vidstack Settings (⚙) menu.
  *
- * Vidstack portals settings panel to menuContainer / body (`portal: true`),
- * so we must search document-wide and re-inject when the open panel re-renders.
+ * Settings children are re-created by Lit when the panel opens / submenus refresh,
+ * so we re-inject aggressively while the root Settings menu is open.
  */
 
 import {
@@ -10,6 +10,12 @@ import {
   setAdFreeDefaultEnabled
 } from "@/lib/ad-free/default-pref";
 import { createAdFreeLogger } from "@/lib/ad-free/debug-log";
+import {
+  createQualityMenu,
+  QUALITY_SECTION_CLASS,
+  type QualityMenuController
+} from "@/lib/ad-free/quality-menu";
+import type { AdFreeQualityOption } from "@/lib/ad-free/resolve-stream";
 
 const log = createAdFreeLogger("default-menu");
 const ROW_CLASS = "ytdl-always-adfree";
@@ -17,75 +23,160 @@ const SECTION_CLASS = "ytdl-always-adfree-section";
 const STYLE_ID = "ytdl-always-adfree-style";
 
 export type DefaultMenuItemController = {
+  setSelectedQuality: (qualityId: string) => void;
   dispose: () => void;
 };
 
 const TOGGLE_CSS = `
-/* Lives in portaled settings panel (often outside #player-wrap) */
+/* YouTube-style Always Ad-Free row (portaled settings panel) */
 .${SECTION_CLASS} {
-  margin: 0 0 4px;
-  padding: 0 0 4px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+  width: 100%;
+  margin: 0 0 2px;
+  padding: 0 0 6px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  box-sizing: border-box;
 }
 .${ROW_CLASS} {
   display: flex !important;
   align-items: center;
-  gap: 10px;
-  min-height: 52px;
-  padding: 10px 12px !important;
-  border-radius: 8px;
+  gap: 12px;
+  height: 48px;
+  min-height: 48px;
+  max-height: 48px;
+  padding: 0 12px !important;
+  border-radius: 12px;
   cursor: pointer;
   box-sizing: border-box;
   transition: background 0.12s ease;
 }
 .${ROW_CLASS}:hover {
-  background: rgba(255, 255, 255, 0.08) !important;
+  background: rgba(255, 255, 255, 0.1) !important;
 }
 .${ROW_CLASS} .ytdl-always-adfree-icon {
   display: grid;
   place-items: center;
-  flex-shrink: 0;
-  width: 28px;
-  height: 28px;
-  border-radius: 8px;
-  background: rgba(255, 0, 51, 0.18);
-  color: #ff4d6a;
+  flex: 0 0 32px;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: linear-gradient(145deg, rgba(255, 0, 51, 0.28), rgba(255, 0, 51, 0.1));
+  color: #ff5a73;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.06);
 }
 .${ROW_CLASS} .ytdl-always-adfree-text {
   flex: 1 1 auto;
   min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 1px;
 }
-.${ROW_CLASS} .vds-menu-item-label,
 .${ROW_CLASS} .ytdl-always-adfree-label {
-  font: 600 13px/1.25 "YouTube Sans", Roboto, Arial, sans-serif !important;
-  color: #fff !important;
+  font: 500 14px/1.2 "YouTube Sans", Roboto, Arial, sans-serif !important;
+  color: #f5f5f5 !important;
   margin: 0 !important;
 }
 .${ROW_CLASS} .ytdl-always-adfree-desc {
-  font: 400 11px/1.3 "YouTube Sans", Roboto, Arial, sans-serif;
-  color: rgba(255, 255, 255, 0.52);
+  font: 400 11.5px/1.25 "YouTube Sans", Roboto, Arial, sans-serif;
+  color: rgba(255, 255, 255, 0.5);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 .${ROW_CLASS} .ytdl-always-adfree-hint {
-  flex-shrink: 0;
-  font: 600 11px/1 "YouTube Sans", Roboto, Arial, sans-serif !important;
-  color: rgba(255, 255, 255, 0.48) !important;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
+  display: none; /* checkbox is enough; keeps row stable */
 }
+/* YouTube-like pill switch */
 .${ROW_CLASS} .ytdl-always-adfree-checkbox {
-  flex-shrink: 0;
-  pointer-events: none; /* clicks go to the row once — avoid double toggle */
-  --checkbox-active-bg: #ff0033;
+  position: relative;
+  flex: 0 0 40px;
+  width: 40px;
+  min-width: 40px;
+  height: 22px;
+  border-radius: 11px;
+  background: rgba(255, 255, 255, 0.18) !important;
+  box-shadow: none !important;
+  pointer-events: none;
+  box-sizing: border-box;
+  transition: background 0.18s ease;
+}
+.${ROW_CLASS} .ytdl-always-adfree-checkbox::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.35);
+  transition: transform 0.18s cubic-bezier(0.2, 0.8, 0.2, 1);
 }
 .${ROW_CLASS} .ytdl-always-adfree-checkbox[aria-checked="true"],
 .${ROW_CLASS} .ytdl-always-adfree-checkbox.is-on {
-  background-color: #ff0033 !important;
+  background: #ff0033 !important;
+}
+.${ROW_CLASS} .ytdl-always-adfree-checkbox[aria-checked="true"]::after,
+.${ROW_CLASS} .ytdl-always-adfree-checkbox.is-on::after {
+  transform: translateX(18px);
+}
+
+/* Fallback surface tokens if player.css not yet applied to portaled nodes */
+.vds-settings-menu-items.vds-menu-items[data-root],
+media-menu-items.vds-settings-menu-items[data-root] {
+  --media-menu-item-border-radius: 10px;
+  --media-menu-top-bar-bg: rgba(255, 255, 255, 0.1);
+  --media-menu-section-bg: rgba(255, 255, 255, 0.04);
+  --media-menu-section-border-radius: 10px;
+  --media-menu-bg: rgba(15, 15, 15, 0.88) !important;
+  --media-menu-border-radius: 12px !important;
+  --media-menu-padding: 8px !important;
+  background: rgba(15, 15, 15, 0.88) !important;
+  border: 1px solid rgba(255, 255, 255, 0.12) !important;
+  border-radius: 12px !important;
+  backdrop-filter: blur(16px) saturate(1.2) !important;
+  -webkit-backdrop-filter: blur(16px) saturate(1.2) !important;
+  box-shadow: 0 10px 32px rgba(0, 0, 0, 0.5) !important;
+  overflow-x: hidden !important;
+}
+
+/* Expanded ← header inside settings (Speed / Quality / Captions / …) */
+.vds-settings-menu-items .vds-menu-item[aria-expanded="true"],
+.vds-settings-menu-items media-menu-button.vds-menu-item[aria-expanded="true"],
+.vds-settings-menu-items media-menu-button.vds-menu-item[data-open] {
+  border-radius: 10px !important;
+  border-bottom: none !important;
+  margin-bottom: 6px !important;
+  background: rgba(28, 28, 28, 0.72) !important;
+  font-weight: 600 !important;
+  top: 0 !important;
+  backdrop-filter: blur(14px) saturate(1.2) !important;
+  -webkit-backdrop-filter: blur(14px) saturate(1.2) !important;
+}
+
+.vds-settings-menu-items .vds-menu-item,
+.vds-settings-menu-items media-menu-button.vds-menu-item,
+.vds-settings-menu-items .vds-radio {
+  border-radius: 10px !important;
+}
+
+.vds-settings-menu-items .vds-menu-section-body {
+  border-radius: 10px !important;
+  background: rgba(255, 255, 255, 0.04) !important;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  padding: 2px !important;
+}
+
+.vds-settings-menu-items .vds-menu-section-title {
+  padding: 4px 12px 6px;
+  color: rgba(255, 255, 255, 0.45);
+  font: 600 11px/1.2 "YouTube Sans", Roboto, Arial, sans-serif;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.vds-settings-menu-items .vds-radio[aria-checked="true"],
+.vds-settings-menu-items .vds-radio[data-checked] {
+  background: rgb(255 0 51 / 0.16) !important;
 }
 `;
 
@@ -102,15 +193,9 @@ function ensureStyles() {
 function syncCheckbox(elCheckbox: HTMLElement, enabled: boolean) {
   elCheckbox.setAttribute("aria-checked", enabled ? "true" : "false");
   elCheckbox.classList.toggle("is-on", enabled);
-  const elHint = elCheckbox
-    .closest(`.${ROW_CLASS}`)
-    ?.querySelector<HTMLElement>(".ytdl-always-adfree-hint");
-  if (elHint) {
-    elHint.textContent = enabled ? "On" : "Off";
-  }
 }
 
-function buildSection(
+function buildAlwaysSection(
   enabled: boolean,
   onEnabledChange: (enabled: boolean) => void
 ): HTMLElement {
@@ -119,9 +204,6 @@ function buildSection(
   const elSection = document.createElement("div");
   elSection.className = `vds-menu-section ${SECTION_CLASS}`;
   elSection.dataset.ytdlAlwaysAdfree = "1";
-
-  const elBody = document.createElement("div");
-  elBody.className = "vds-menu-section-body";
 
   const elRow = document.createElement("div");
   elRow.className = `vds-menu-item ${ROW_CLASS}`;
@@ -142,26 +224,21 @@ function buildSection(
   elText.className = "ytdl-always-adfree-text";
 
   const elLabel = document.createElement("div");
-  elLabel.className = "vds-menu-item-label ytdl-always-adfree-label";
+  elLabel.className = "ytdl-always-adfree-label";
   elLabel.textContent = "Always Ad-Free";
 
   const elDesc = document.createElement("div");
   elDesc.className = "ytdl-always-adfree-desc";
-  elDesc.textContent = "Open watch pages in Ad-Free by default";
+  elDesc.textContent = "Skip ads by default on watch pages";
 
   elText.append(elLabel, elDesc);
 
-  const elHint = document.createElement("span");
-  elHint.className = "ytdl-always-adfree-hint vds-menu-item-hint";
-  elHint.textContent = enabled ? "On" : "Off";
-
   const elCheckbox = document.createElement("div");
-  elCheckbox.className = "vds-menu-checkbox ytdl-always-adfree-checkbox";
+  elCheckbox.className = "ytdl-always-adfree-checkbox";
   elCheckbox.setAttribute("role", "presentation");
   elCheckbox.setAttribute("aria-hidden", "true");
   syncCheckbox(elCheckbox, enabled);
 
-  // Guard against pointerup+click (or double-fire) flipping twice → ends up Off
   let isBusy = false;
   let lastToggleAt = 0;
 
@@ -174,7 +251,6 @@ function buildSection(
 
     const now = Date.now();
     if (isBusy || now - lastToggleAt < 350) {
-      log.debug("toggle ignored (debounce/busy)");
       return;
     }
     lastToggleAt = now;
@@ -200,7 +276,6 @@ function buildSection(
     }
   }
 
-  // Single input path only — checkbox has pointer-events: none
   elRow.addEventListener("click", event => {
     void toggle(event);
   });
@@ -210,77 +285,91 @@ function buildSection(
     }
   });
 
-  elRow.append(elIcon, elText, elHint, elCheckbox);
-  elBody.append(elRow);
-  elSection.append(elBody);
+  elRow.append(elIcon, elText, elCheckbox);
+  elSection.append(elRow);
   return elSection;
 }
 
-function findSettingsMenuItems(elMenu?: Element | null): HTMLElement | null {
-  // Prefer items belonging to the open settings menu
+function findRootSettingsItems(elMenu?: Element | null): HTMLElement | null {
   if (elMenu instanceof HTMLElement) {
     const host = elMenu as HTMLElement & { contentElement?: HTMLElement | null };
-    if (host.contentElement instanceof HTMLElement) {
+    if (host.contentElement instanceof HTMLElement
+      && host.contentElement.classList.contains("vds-settings-menu-items")) {
       return host.contentElement;
     }
     const nested = elMenu.querySelector<HTMLElement>(
-      ".vds-settings-menu-items, media-menu-items.vds-settings-menu-items"
+      ":scope > media-menu-portal media-menu-items.vds-settings-menu-items, "
+      + ":scope > media-menu-items.vds-settings-menu-items, "
+      + "media-menu-items.vds-settings-menu-items"
     );
-    if (nested) {
+    if (nested?.classList.contains("vds-settings-menu-items")) {
       return nested;
     }
   }
 
-  // Portaled: search document for open settings panel
   const candidates = document.querySelectorAll<HTMLElement>(
     "media-menu-items.vds-settings-menu-items, .vds-settings-menu-items.vds-menu-items"
   );
   for (const el of candidates) {
-    // Prefer visible / open panel
-    const hidden = el.getAttribute("aria-hidden");
-    if (hidden === "true") {
+    // Root settings list only (not nested submenu panels)
+    if (!el.classList.contains("vds-settings-menu-items")) {
       continue;
     }
-    if (el.hasAttribute("data-open") || el.getAttribute("data-open") === "") {
-      return el;
+    if (el.getAttribute("aria-hidden") === "true") {
+      continue;
     }
-    // data-open may be boolean attribute equivalent
-    if (el.matches("[data-open]")) {
-      return el;
-    }
-  }
-  // Fallback: any settings items that currently have children (open)
-  for (const el of candidates) {
-    if (el.childElementCount > 0) {
+    if (el.hasAttribute("data-open") || el.childElementCount > 0) {
       return el;
     }
   }
   return candidates[0] ?? null;
 }
 
-function isSettingsMenu(el: Element | null): el is Element {
+function isRootSettingsMenu(el: Element | null): el is Element {
   if (!el) {
     return false;
   }
-  return el.matches("media-menu.vds-settings-menu, .vds-settings-menu")
-    || Boolean(el.closest?.("media-menu.vds-settings-menu, .vds-settings-menu"));
+  // Only the top-level settings gear menu — NOT nested Audio/Captions menus
+  return el.matches("media-menu.vds-settings-menu, .vds-settings-menu");
 }
 
 /**
- * Wire Settings ⚙ open → inject Always Ad-Free at the top of the panel.
+ * Wire Settings ⚙ open → inject Always Ad-Free + Quality submenu.
  */
-export function installDefaultMenuItem(elPlayer: HTMLElement): DefaultMenuItemController {
+export function installDefaultMenuItem(
+  elPlayer: HTMLElement,
+  options?: {
+    qualities?: AdFreeQualityOption[];
+    selectedQualityId?: string;
+    onQualitySelect?: (quality: AdFreeQualityOption) => void;
+  }
+): DefaultMenuItemController {
   let disposed = false;
   let lastEnabled = false;
   let observer: MutationObserver | null = null;
   let injectTimer = 0;
+  let keepAliveTimer = 0;
   let activeItems: HTMLElement | null = null;
+  let elAlwaysSection: HTMLElement | null = null;
+  let settingsOpen = false;
+
+  const qualities = options?.qualities ?? [];
+  const onQualitySelect = options?.onQualitySelect;
+
+  let qualityMenu: QualityMenuController | null = null;
+  if (qualities.length > 0 && onQualitySelect) {
+    qualityMenu = createQualityMenu(
+      qualities,
+      options?.selectedQualityId ?? qualities[0]?.id ?? "",
+      onQualitySelect
+    );
+  }
 
   void getAdFreeDefaultEnabled().then(enabled => {
     lastEnabled = enabled;
   });
 
-  function stopObserver() {
+  function stopWatchers() {
     observer?.disconnect();
     observer = null;
     activeItems = null;
@@ -288,6 +377,38 @@ export function installDefaultMenuItem(elPlayer: HTMLElement): DefaultMenuItemCo
       window.clearTimeout(injectTimer);
       injectTimer = 0;
     }
+    if (keepAliveTimer) {
+      window.clearInterval(keepAliveTimer);
+      keepAliveTimer = 0;
+    }
+  }
+
+  function ensureAlwaysSection(): HTMLElement {
+    if (elAlwaysSection?.isConnected
+      || (elAlwaysSection && elAlwaysSection.isConnected === false && elAlwaysSection.dataset.ytdlAlwaysAdfree)) {
+      // Refresh checkbox state
+      const elCheckbox = elAlwaysSection.querySelector<HTMLElement>(".ytdl-always-adfree-checkbox");
+      if (elCheckbox) {
+        syncCheckbox(elCheckbox, lastEnabled);
+      }
+      elAlwaysSection.querySelector(`.${ROW_CLASS}`)
+        ?.setAttribute("aria-checked", lastEnabled ? "true" : "false");
+      if (!elAlwaysSection.isConnected) {
+        // still reusable detached node
+      }
+      return elAlwaysSection;
+    }
+    elAlwaysSection = buildAlwaysSection(lastEnabled, enabled => {
+      lastEnabled = enabled;
+    });
+    return elAlwaysSection;
+  }
+
+  function needsInject(elItems: HTMLElement): boolean {
+    const hasAlways = Boolean(elItems.querySelector(`:scope > .${SECTION_CLASS}, :scope .${SECTION_CLASS}`));
+    const hasQuality = !qualityMenu
+      || Boolean(elItems.querySelector(`:scope > .${QUALITY_SECTION_CLASS}, :scope .${QUALITY_SECTION_CLASS}`));
+    return !hasAlways || !hasQuality;
   }
 
   function injectInto(elItems: HTMLElement) {
@@ -296,34 +417,46 @@ export function installDefaultMenuItem(elPlayer: HTMLElement): DefaultMenuItemCo
     }
     ensureStyles();
 
-    const existing = elItems.querySelector<HTMLElement>(`.${SECTION_CLASS}`);
-    if (existing) {
-      const elCheckbox = existing.querySelector<HTMLElement>(".vds-menu-checkbox");
-      if (elCheckbox) {
-        syncCheckbox(elCheckbox, lastEnabled);
-      }
-      existing.querySelector(`.${ROW_CLASS}`)
-        ?.setAttribute("aria-checked", lastEnabled ? "true" : "false");
-      // Keep as first child
-      if (elItems.firstElementChild !== existing) {
-        elItems.prepend(existing);
-      }
+    if (!elItems.classList.contains("vds-settings-menu-items")) {
       return;
     }
 
-    // Only inject when the root settings list is populated (Speed/Captions/…)
-    // or empty-but-open — avoid nested submenu bodies
-    const isRootPanel = elItems.classList.contains("vds-settings-menu-items")
-      || elItems.matches("media-menu-items.vds-settings-menu-items");
-    if (!isRootPanel) {
+    elItems.style.transition = "none";
+
+    const elAlways = ensureAlwaysSection();
+    const elQuality = qualityMenu?.root ?? null;
+
+    // Only touch DOM when order is wrong or nodes missing (reduces flicker)
+    if (elItems.firstElementChild !== elAlways) {
+      elItems.prepend(elAlways);
+    }
+    if (elQuality) {
+      if (elAlways.nextElementSibling !== elQuality) {
+        elAlways.after(elQuality);
+      }
+    }
+  }
+
+  function watchItems(elItems: HTMLElement) {
+    if (activeItems === elItems && observer) {
+      if (needsInject(elItems)) {
+        injectInto(elItems);
+      }
       return;
     }
-
-    const elSection = buildSection(lastEnabled, enabled => {
-      lastEnabled = enabled;
+    observer?.disconnect();
+    activeItems = elItems;
+    injectInto(elItems);
+    observer = new MutationObserver(() => {
+      if (disposed || !activeItems || !settingsOpen) {
+        return;
+      }
+      // Lit re-renders wipe our nodes when submenu state changes
+      if (needsInject(activeItems) || activeItems.firstElementChild !== elAlwaysSection) {
+        injectInto(activeItems);
+      }
     });
-    elItems.prepend(elSection);
-    log.debug("injected Always Ad-Free into settings menu", { enabled: lastEnabled });
+    observer.observe(elItems, { childList: true, subtree: false });
   }
 
   function scheduleInject(elMenu?: Element | null) {
@@ -331,91 +464,90 @@ export function installDefaultMenuItem(elPlayer: HTMLElement): DefaultMenuItemCo
       return;
     }
     let attempts = 0;
-    const maxAttempts = 24;
+    const maxAttempts = 30;
 
     function tick() {
-      if (disposed) {
+      if (disposed || !settingsOpen) {
         return;
       }
-      const elItems = findSettingsMenuItems(elMenu);
-      if (elItems) {
-        injectInto(elItems);
-        // Re-inject if Vidstack re-renders the open panel and drops our row
-        if (activeItems !== elItems) {
-          observer?.disconnect();
-          activeItems = elItems;
-          observer = new MutationObserver(() => {
-            if (disposed || !activeItems) {
-              return;
-            }
-            if (!activeItems.querySelector(`.${SECTION_CLASS}`)) {
-              injectInto(activeItems);
-            }
-          });
-          observer.observe(elItems, { childList: true });
-        }
+      const elItems = findRootSettingsItems(elMenu);
+      if (elItems && elItems.childElementCount >= 0) {
+        // Wait until native Speed/Captions rows exist OR empty open panel
+        watchItems(elItems);
         return;
       }
       attempts += 1;
       if (attempts < maxAttempts) {
         injectTimer = window.setTimeout(tick, 40);
-      } else {
-        log.warn("settings menu items not found for Always Ad-Free inject");
       }
     }
 
     if (injectTimer) {
       window.clearTimeout(injectTimer);
     }
-    // Items render after open signal — wait a couple frames then poll
     requestAnimationFrame(() => {
       requestAnimationFrame(tick);
     });
   }
 
+  function startKeepAlive(elMenu?: Element | null) {
+    if (keepAliveTimer) {
+      window.clearInterval(keepAliveTimer);
+    }
+    // Lit can wipe children after submenu open/close without a childList we catch
+    keepAliveTimer = window.setInterval(() => {
+      if (disposed || !settingsOpen) {
+        return;
+      }
+      const elItems = findRootSettingsItems(elMenu) ?? activeItems;
+      if (elItems && needsInject(elItems)) {
+        watchItems(elItems);
+      }
+    }, 250);
+  }
+
   function onOpen(event: Event) {
     const target = event.target;
-    if (!(target instanceof Element)) {
+    if (!(target instanceof Element) || !isRootSettingsMenu(target)) {
       return;
     }
-    if (!isSettingsMenu(target)) {
-      return;
-    }
-    const elMenu = target.matches("media-menu.vds-settings-menu, .vds-settings-menu")
-      ? target
-      : target.closest("media-menu.vds-settings-menu, .vds-settings-menu");
-
+    settingsOpen = true;
     void getAdFreeDefaultEnabled().then(enabled => {
       lastEnabled = enabled;
-      scheduleInject(elMenu);
+      scheduleInject(target);
+      startKeepAlive(target);
     });
   }
 
   function onClose(event: Event) {
     const target = event.target;
-    if (!(target instanceof Element) || !isSettingsMenu(target)) {
+    if (!(target instanceof Element) || !isRootSettingsMenu(target)) {
       return;
     }
-    stopObserver();
+    settingsOpen = false;
+    stopWatchers();
   }
 
-  // Capture: open/close fire on media-menu inside player (items may be portaled)
   elPlayer.addEventListener("open", onOpen, true);
   elPlayer.addEventListener("close", onClose, true);
 
-  // Also catch clicks on the gear (in case open event order is flaky)
   elPlayer.addEventListener("click", event => {
     const target = event.target;
     if (!(target instanceof Element)) {
       return;
     }
-    if (!target.closest(".vds-settings-menu .vds-menu-button, media-menu.vds-settings-menu media-menu-button")) {
+    if (!target.closest(
+      "media-menu.vds-settings-menu > media-tooltip media-menu-button, "
+      + "media-menu.vds-settings-menu media-menu-button.vds-button"
+    )) {
       return;
     }
-    // Menu opens on same click — schedule inject shortly after
+    const elMenu = target.closest("media-menu.vds-settings-menu, .vds-settings-menu");
+    settingsOpen = true;
     void getAdFreeDefaultEnabled().then(enabled => {
       lastEnabled = enabled;
-      scheduleInject(target.closest("media-menu.vds-settings-menu, .vds-settings-menu"));
+      scheduleInject(elMenu);
+      startKeepAlive(elMenu);
     });
   }, true);
 
@@ -435,7 +567,7 @@ export function installDefaultMenuItem(elPlayer: HTMLElement): DefaultMenuItemCo
         const next = (optionsChange.newValue as { isAdFreeDefault?: boolean })
           .isAdFreeDefault === true;
         lastEnabled = next;
-        document.querySelectorAll<HTMLElement>(`.${ROW_CLASS} .vds-menu-checkbox`).forEach(el => {
+        document.querySelectorAll<HTMLElement>(`.${ROW_CLASS} .ytdl-always-adfree-checkbox`).forEach(el => {
           syncCheckbox(el, next);
         });
         document.querySelectorAll<HTMLElement>(`.${ROW_CLASS}`).forEach(el => {
@@ -450,16 +582,25 @@ export function installDefaultMenuItem(elPlayer: HTMLElement): DefaultMenuItemCo
   })();
 
   ensureStyles();
-  log.info("Always Ad-Free settings injector ready");
+  log.info("Settings extras ready (Always Ad-Free + Quality submenu)");
 
   return {
+    setSelectedQuality(qualityId: string) {
+      qualityMenu?.setSelected(qualityId);
+    },
     dispose() {
       disposed = true;
+      settingsOpen = false;
       elPlayer.removeEventListener("open", onOpen, true);
       elPlayer.removeEventListener("close", onClose, true);
-      stopObserver();
+      stopWatchers();
       unwatchStorage();
+      qualityMenu?.dispose();
+      qualityMenu = null;
+      elAlwaysSection?.remove();
+      elAlwaysSection = null;
       document.querySelectorAll(`.${SECTION_CLASS}`).forEach(el => el.remove());
+      document.querySelectorAll(`.${QUALITY_SECTION_CLASS}`).forEach(el => el.remove());
     }
   };
 }

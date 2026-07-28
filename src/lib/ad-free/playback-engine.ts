@@ -551,10 +551,9 @@ export function createPlaybackEngine(options: EngineOptions): PlaybackEngine {
     if (state === next) {
       return;
     }
-    log.info(`state ${state} → ${next}`, {
+    log.debug(`state ${state} → ${next}`, {
       gen: generation,
       wantsPlaying,
-      locked: isTransitionLocked,
       t: Number(elPlayer.currentTime ?? 0)
     });
     state = next;
@@ -802,7 +801,7 @@ export function createPlaybackEngine(options: EngineOptions): PlaybackEngine {
     elAudio.muted = true;
     elAudio.src = withTimeFragment(activeAudioUrl, startAt);
     elMount.append(elAudio);
-    log.info("audio created", { url: activeAudioUrl.slice(0, 96), startAt });
+    log.debug("audio created", { startAt });
     return elAudio;
   }
 
@@ -1163,7 +1162,7 @@ export function createPlaybackEngine(options: EngineOptions): PlaybackEngine {
     try {
       // First attach — create once with #t=
       if (!elAudio) {
-        log.info("audio attach", { target });
+        log.debug("audio attach", { target });
         const audio = ensureAudio(url, target);
         await waitForEvent(audio, "loadedmetadata", 6_000, () => isCurrent(gen), "audio-meta");
         if (!isCurrent(gen) || !elAudio) {
@@ -1194,7 +1193,7 @@ export function createPlaybackEngine(options: EngineOptions): PlaybackEngine {
 
       // Only recreate for real large jumps after audio has valid position
       if (jump > AUDIO_RECREATE_JUMP_S && elAudio.readyState >= 1 && audioTime > 1) {
-        log.info("audio recreate for large seek", {
+        log.debug("audio recreate for large seek", {
           jump: Number(jump.toFixed(1)),
           target
         });
@@ -1691,7 +1690,7 @@ export function createPlaybackEngine(options: EngineOptions): PlaybackEngine {
       }
       return;
     }
-    log.info(`requestPlay (${reason})`, { ahead, mse: isMseActive() });
+    log.debug(`requestPlay (${reason})`, { ahead, mse: isMseActive() });
     const ok = await playMediaElements(reason);
     if (disposed || isBusy()) {
       return;
@@ -2393,8 +2392,18 @@ export function createPlaybackEngine(options: EngineOptions): PlaybackEngine {
       if (!forcePause && snapshot.wasPlaying) {
         wantsPlaying = true;
         playbackIntent = true;
-        // Keep-alive re-enable: buffers still warm — resume without re-seek
-        void requestPlay("applySnapshot-near");
+        // Already playing with intent — do NOT re-requestPlay (thin-buffer rebuffer
+        // flicker right after first ready: pause → grace re-play → flash).
+        const alreadyPlaying = !elPlayer.paused || state === "playing" || isRebuffering;
+        if (!alreadyPlaying) {
+          void requestPlay("applySnapshot-near");
+        } else {
+          log.debug("applySnapshot near — already playing/rebuffering, skip requestPlay", {
+            state,
+            paused: elPlayer.paused,
+            isRebuffering
+          });
+        }
       } else {
         wantsPlaying = false;
         playbackIntent = false;

@@ -73,119 +73,61 @@ media-player[data-fullscreen] {
   border-radius: 0 !important;
 }
 
-/* Custom quality chip — visual twin of the Ad-Free toggle */
-.quality-menu {
-  position: absolute;
-  top: 12px;
-  right: 12px;
-  z-index: 20;
-  pointer-events: auto;
-  opacity: 1;
-  visibility: visible;
-  transition: opacity 0.2s ease, visibility 0.2s ease;
-}
+/* Quality lives under Settings ⚙ (see quality-menu.ts / default-menu-item.ts). */
 
-/* Hide with Vidstack controls on cursor idle (same moment as bottom chrome) */
-#player-wrap media-player[data-started]:not([data-controls]) .quality-menu,
-#player-wrap media-player[data-started]:not([data-controls]) .quality-menu.is-open {
-  opacity: 0;
-  visibility: hidden;
-  pointer-events: none;
-}
-.quality-menu-button {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  height: 32px;
-  background: rgba(15, 15, 15, 0.82);
-  color: #fff;
-  border: 1px solid rgba(255, 255, 255, 0.14);
-  border-radius: 999px;
-  padding: 0 10px 0 12px;
-  font: 600 12px/1 "YouTube Sans", Roboto, Arial, sans-serif;
-  letter-spacing: 0.01em;
-  cursor: pointer;
-  backdrop-filter: blur(10px);
-  -webkit-backdrop-filter: blur(10px);
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
-  transition: background 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
-}
-.quality-menu-button:hover {
-  background: rgba(40, 40, 40, 0.94);
-  border-color: rgba(255, 255, 255, 0.22);
-  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.4);
-}
-.quality-menu.is-open .quality-menu-button {
-  background: rgba(255, 0, 51, 0.16);
-  border-color: rgba(255, 0, 51, 0.5);
-}
-.quality-menu-label {
-  white-space: nowrap;
-}
-.quality-menu-meta {
-  font-size: 10px;
-  font-weight: 600;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  color: rgba(255, 255, 255, 0.55);
-  padding: 2px 6px;
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.08);
-}
-.quality-menu-chevron-wrap {
-  display: grid;
-  place-items: center;
-  color: rgba(255, 255, 255, 0.65);
-  transition: transform 0.15s ease;
-}
-.quality-menu.is-open .quality-menu-chevron-wrap {
-  transform: rotate(180deg);
-  color: #fff;
-}
-.quality-menu-list {
+/* Ephemeral seek / speed toasts */
+.ytdl-player-toast-layer {
   position: absolute;
-  top: calc(100% + 8px);
-  right: 0;
-  margin: 0;
-  padding: 6px;
-  list-style: none;
-  min-width: 148px;
-  max-height: 260px;
-  overflow: auto;
-  background: rgba(20, 20, 20, 0.96);
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  border-radius: 12px;
-  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5);
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
+  inset: 0;
+  z-index: 25;
+  pointer-events: none;
+  overflow: hidden;
 }
-.quality-menu-item {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 8px 10px;
-  border-radius: 8px;
-  color: #f1f1f1;
-  font: 500 12px/1.2 "YouTube Sans", Roboto, Arial, sans-serif;
-  cursor: pointer;
+.ytdl-player-toast {
+  position: absolute;
+  padding: 10px 16px;
+  border-radius: 10px;
+  background: rgba(15, 15, 15, 0.78);
+  color: #fff;
+  font: 600 14px/1.2 "YouTube Sans", Roboto, Arial, sans-serif;
+  letter-spacing: 0.02em;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.4);
+  opacity: 0;
+  transform: scale(0.94);
+  transition: opacity 0.16s ease, transform 0.16s ease;
   white-space: nowrap;
 }
-.quality-menu-item:hover {
-  background: rgba(255, 255, 255, 0.08);
-}
-.quality-menu-item.is-selected {
-  background: rgb(255 0 51 / 0.16);
-  color: #fff;
-}
-.quality-menu-item-check {
-  opacity: 0;
-  color: #ff4d6a;
-  font-size: 12px;
-  font-weight: 700;
-}
-.quality-menu-item.is-selected .quality-menu-item-check {
+.ytdl-player-toast.is-visible {
   opacity: 1;
+  transform: scale(1);
+}
+.ytdl-player-toast--center {
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%) scale(0.94);
+}
+.ytdl-player-toast--center.is-visible {
+  transform: translate(-50%, -50%) scale(1);
+}
+.ytdl-player-toast--seek-left {
+  left: 12%;
+  top: 50%;
+  transform: translateY(-50%) scale(0.94);
+  font-size: 22px;
+  padding: 14px 18px;
+}
+.ytdl-player-toast--seek-left.is-visible {
+  transform: translateY(-50%) scale(1);
+}
+.ytdl-player-toast--seek-right {
+  right: 12%;
+  top: 50%;
+  transform: translateY(-50%) scale(0.94);
+  font-size: 22px;
+  padding: 14px 18px;
+}
+.ytdl-player-toast--seek-right.is-visible {
+  transform: translateY(-50%) scale(1);
 }
 
 #shell.is-embed #player-wrap {
@@ -367,6 +309,35 @@ media-player[data-fullscreen] {
   visibility: visible;
 }
 
+/* First open: solid black until media ready — no flash of empty Vidstack chrome */
+#player-wrap.is-bootstrapping .ytdl-loader {
+  background: #000;
+  opacity: 1;
+  visibility: visible;
+}
+#player-wrap.is-bootstrapping media-player {
+  opacity: 0;
+  pointer-events: none;
+}
+/* Hide chrome until layout settles — prevents top-right → bottom jump of buttons */
+#player-wrap:not(.is-chrome-ready) .vds-controls,
+#player-wrap:not(.is-chrome-ready) .vds-controls-group,
+#player-wrap.is-bootstrapping .vds-controls,
+#player-wrap.is-bootstrapping .vds-controls-group {
+  opacity: 0 !important;
+  visibility: hidden !important;
+  pointer-events: none !important;
+}
+#player-wrap:not(.is-bootstrapping) media-player {
+  opacity: 1;
+  transition: opacity 0.15s ease;
+}
+#player-wrap.is-chrome-ready:not(.is-bootstrapping) media-player[data-controls] .vds-controls {
+  opacity: 1;
+  visibility: visible;
+  transition: opacity 0.18s ease;
+}
+
 .ytdl-loader-ring {
   box-sizing: border-box;
   width: 40px;
@@ -441,17 +412,223 @@ media-player[data-fullscreen] {
  */
 
 /*
+ * Kill Vidstack height accordion on menus.
+ * Without this, open starts as a ~10–20px strip while --menu-height is measured
+ * (chapters list) and content toggles re-tween height (Always Ad-Free On/Off).
+ */
+#player-wrap .vds-menu-items,
+#player-wrap media-menu-items.vds-menu-items,
+.vds-settings-menu-items.vds-menu-items,
+media-menu-items.vds-settings-menu-items,
+.vds-chapters-menu-items.vds-menu-items,
+media-menu-items.vds-chapters-menu-items {
+  transition: none !important;
+}
+
+#player-wrap .vds-menu-items[data-root],
+#player-wrap media-menu-items.vds-menu-items[data-root],
+.vds-settings-menu-items.vds-menu-items[data-root],
+media-menu-items.vds-settings-menu-items[data-root],
+.vds-chapters-menu-items.vds-menu-items[data-root],
+media-menu-items.vds-chapters-menu-items[data-root] {
+  height: auto !important;
+  will-change: auto !important;
+  /* YouTube-ish tokens for nested items */
+  --media-menu-item-border-radius: 10px;
+  --media-menu-item-height: 40px;
+  --media-menu-item-padding: 10px 12px;
+  --media-menu-item-hover-bg: rgba(255, 255, 255, 0.1);
+  --media-menu-top-bar-bg: rgba(255, 255, 255, 0.08);
+  --media-menu-section-bg: rgba(255, 255, 255, 0.04);
+  --media-menu-section-border-radius: 10px;
+  --media-menu-section-header-font-size: 11px;
+  --media-menu-hint-font-size: 12.5px;
+  --media-menu-bg: rgba(15, 15, 15, 0.88);
+  --media-menu-border-radius: 12px;
+  --media-menu-padding: 8px;
+  --color-gray-50: rgba(255, 255, 255, 0.1);
+  --color-gray-200: rgba(255, 255, 255, 0.08);
+  --color-gray-300: rgba(255, 255, 255, 0.05);
+  --color-gray-400: rgba(15, 15, 15, 0.88);
+  --default-root-border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(15, 15, 15, 0.88) !important;
+  border: 1px solid rgba(255, 255, 255, 0.12) !important;
+  border-radius: 12px !important;
+  backdrop-filter: blur(16px) saturate(1.2) !important;
+  -webkit-backdrop-filter: blur(16px) saturate(1.2) !important;
+  box-shadow: 0 10px 32px rgba(0, 0, 0, 0.5) !important;
+  padding: 8px !important;
+  overflow-x: hidden !important;
+}
+
+#player-wrap .vds-menu-items[data-transition="height"],
+#player-wrap media-menu-items[data-transition="height"],
+.vds-settings-menu-items[data-transition="height"],
+media-menu-items.vds-settings-menu-items[data-transition="height"],
+.vds-chapters-menu-items[data-transition="height"] {
+  overflow-y: auto !important;
+  pointer-events: auto !important;
+}
+
+/*
+ * Settings / submenu rows — rounded like YouTube; fix Vidstack sticky header
+ * which forces border-radius: 0 on aria-expanded=true (looks broken in a 12px panel).
+ */
+#player-wrap .vds-menu-item,
+#player-wrap media-menu-button.vds-menu-item,
+#player-wrap .vds-radio {
+  border-radius: 10px !important;
+  min-height: 40px;
+  gap: 2px;
+  box-sizing: border-box;
+}
+
+#player-wrap .vds-menu-item:hover,
+#player-wrap media-menu-button.vds-menu-item:hover,
+#player-wrap .vds-radio:hover {
+  background: rgba(255, 255, 255, 0.1) !important;
+}
+
+/* Expanded submenu header (← Speed / Quality / Accessibility …) */
+#player-wrap .vds-menu-item[aria-expanded="true"],
+#player-wrap media-menu-button.vds-menu-item[aria-expanded="true"],
+#player-wrap media-menu-button.vds-menu-item[data-open] {
+  border-radius: 10px !important;
+  border-bottom: none !important;
+  margin-bottom: 6px !important;
+  background: rgba(28, 28, 28, 0.72) !important;
+  font-weight: 600 !important;
+  box-shadow: none !important;
+  /* sticky header stays rounded inside the panel padding */
+  top: 0 !important;
+  backdrop-filter: blur(14px) saturate(1.2) !important;
+  -webkit-backdrop-filter: blur(14px) saturate(1.2) !important;
+}
+
+#player-wrap .vds-menu-item[aria-expanded="true"] .vds-menu-item-label,
+#player-wrap media-menu-button.vds-menu-item[aria-expanded="true"] .vds-menu-item-label {
+  font-weight: 600;
+}
+
+#player-wrap .vds-menu-item-hint {
+  color: rgba(255, 255, 255, 0.5) !important;
+  font-size: 12.5px !important;
+}
+
+/* Nested submenu panels (Font / Color / Opacity …) */
+#player-wrap .vds-menu-items[data-submenu],
+#player-wrap media-menu-items[data-submenu] {
+  width: 100%;
+  padding: 0 !important;
+  gap: 2px;
+  background: transparent !important;
+  border: 0 !important;
+  box-shadow: none !important;
+  backdrop-filter: none !important;
+  border-radius: 0 !important;
+}
+
+#player-wrap .vds-menu-section {
+  width: 100%;
+  margin: 0 0 8px;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+#player-wrap .vds-menu-section:last-child {
+  margin-bottom: 0;
+}
+
+#player-wrap .vds-menu-section-title {
+  padding: 4px 12px 6px;
+  color: rgba(255, 255, 255, 0.45);
+  font: 600 11px/1.2 "YouTube Sans", Roboto, Arial, sans-serif;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+#player-wrap .vds-menu-section-title header {
+  margin: 0;
+  font: inherit;
+  color: inherit;
+}
+
+#player-wrap .vds-menu-section-body {
+  margin: 0 !important;
+  padding: 2px !important;
+  border-radius: 10px !important;
+  background: rgba(255, 255, 255, 0.04) !important;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  overflow: hidden;
+  box-sizing: border-box;
+}
+
+/* Radios inside nested lists */
+#player-wrap .vds-radio-group {
+  width: 100%;
+  gap: 1px;
+}
+
+#player-wrap .vds-radio {
+  padding: 8px 12px !important;
+  border-radius: 8px !important;
+}
+
+#player-wrap .vds-radio[aria-checked="true"],
+#player-wrap .vds-radio[data-checked] {
+  background: rgb(255 0 51 / 0.16) !important;
+}
+
+#player-wrap .vds-radio[aria-checked="true"] .vds-icon,
+#player-wrap .vds-radio[data-checked] .vds-menu-radio-check-icon {
+  color: #ff4d6a !important;
+}
+
+/* Slider rows (opacity / size) inside settings */
+#player-wrap .vds-menu-slider-item,
+#player-wrap .vds-menu-items .vds-menu-item:has(.vds-slider) {
+  border-radius: 8px !important;
+  padding: 8px 10px !important;
+}
+
+#player-wrap .vds-menu-items .vds-slider {
+  --media-slider-track-fill-bg: #ff0033;
+  --media-slider-track-bg: rgba(255, 255, 255, 0.14);
+}
+
+#player-wrap .vds-menu-items .vds-slider-thumb {
+  background: #fff !important;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.4);
+}
+
+/* Reset button at bottom of Accessibility */
+#player-wrap .vds-menu-section-body > .vds-menu-item,
+#player-wrap .vds-menu-section-body > button.vds-menu-item {
+  border-radius: 8px !important;
+  justify-content: center;
+  color: rgba(255, 255, 255, 0.75);
+  font-weight: 500;
+}
+
+#player-wrap .vds-menu-section-body > .vds-menu-item:hover,
+#player-wrap .vds-menu-section-body > button.vds-menu-item:hover {
+  background: rgba(255, 255, 255, 0.08) !important;
+  color: #fff;
+}
+
+/*
  * Chapters menu — laconic list: tight rows, start time chip, no bulky duration/thumbs.
  * Close-on-select is wired in main.ts (media-chapters-radio-group change → menu.close).
  */
 #player-wrap .vds-chapters-menu-items,
-#player-wrap .vds-menu-items:has(.vds-chapters-radio-group) {
+#player-wrap .vds-menu-items:has(.vds-chapters-radio-group),
+media-menu-items.vds-chapters-menu-items {
   min-width: 220px !important;
   max-width: min(320px, 86vw);
-  max-height: min(360px, 55vh);
+  max-height: min(360px, 55vh) !important;
   padding: 6px !important;
   border-radius: 12px;
-  overflow: auto;
+  overflow-y: auto !important;
   background: rgba(20, 20, 20, 0.96);
   border: 1px solid rgba(255, 255, 255, 0.12);
   box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5);

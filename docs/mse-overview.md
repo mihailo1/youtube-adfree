@@ -18,6 +18,7 @@ Documentation for the MediaSource dual-track path that replaced fragile progress
 | **1 — Player integration** | Done | [mse-phase1.md](./mse-phase1.md) |
 | **2 — Index + seek** | Done | [mse-phase2.md](./mse-phase2.md) |
 | **Polish** | Partial (stable baseline restored) | this file + phase2 |
+| **3 — Incremental rebuffer** | Planned (draft) | [mse-phase3.md](./mse-phase3.md) |
 
 ## Architecture
 
@@ -117,4 +118,5 @@ Intentional pause (click on video / button / Space): look for `media-pause-reque
 - [mse-spike.md](./mse-spike.md) — Phase 0 harness  
 - [mse-phase1.md](./mse-phase1.md) — engine integration  
 - [mse-phase2.md](./mse-phase2.md) — index + seek  
+- [mse-phase3.md](./mse-phase3.md) — incremental rebuffer + tighter timeline (draft)  
 - `CLAUDE.md` — short project pointers  

@@ -56,38 +56,60 @@ async function getStoredVisitorData(): Promise<string | undefined> {
   return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
+function sleep(ms: number) {
+  return new Promise<void>(resolve => {
+    setTimeout(resolve, ms);
+  });
+}
+
 async function resolveAdFreeStream(
   videoId: string,
   preferredTabId?: number
 ): Promise<AdFreeStreamPayload> {
-  const youtubeTabIds = await listYouTubeTabIds(preferredTabId);
   const errors: string[] = [];
+  // Content scripts may still be injecting when Ad-Free runs at document_start
+  const rounds = 4;
 
-  // 1) Prefer page-proxy: real cookies + ytcfg.VISITOR_DATA substitution (avoids 403).
-  // Try every www.youtube.com tab — after extension reload only refreshed tabs have CS.
-  if (youtubeTabIds.length === 0) {
-    errors.push("page-proxy: no www.youtube.com tab open");
-  } else {
-    let anyReceivingEndMissing = false;
-    for (const tabId of youtubeTabIds) {
-      try {
-        const pageProxyFetch = createPageProxyFetch(tabId);
-        return await resolveAdFreeStreamFromPlayerApi({
-          videoId,
-          customFetch: pageProxyFetch
-        });
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        if (isReceivingEndMissing(message)) {
-          anyReceivingEndMissing = true;
-          errors.push(`page-proxy tab ${tabId}: no content script`);
-          continue;
-        }
-        errors.push(`page-proxy tab ${tabId}: ${message}`);
-      }
+  for (let round = 0; round < rounds; round += 1) {
+    if (round > 0) {
+      await sleep(300 * round);
     }
-    if (anyReceivingEndMissing) {
-      errors.push(RECEIVING_END_HINT);
+    const youtubeTabIds = await listYouTubeTabIds(preferredTabId);
+    errors.length = 0;
+
+    // 1) Prefer page-proxy: real cookies + ytcfg.VISITOR_DATA substitution (avoids 403).
+    if (youtubeTabIds.length === 0) {
+      errors.push("page-proxy: no www.youtube.com tab open");
+    } else {
+      let anyReceivingEndMissing = false;
+      for (const tabId of youtubeTabIds) {
+        try {
+          const pageProxyFetch = createPageProxyFetch(tabId);
+          return await resolveAdFreeStreamFromPlayerApi({
+            videoId,
+            customFetch: pageProxyFetch
+          });
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          if (isReceivingEndMissing(message)) {
+            anyReceivingEndMissing = true;
+            errors.push(`page-proxy tab ${tabId}: no content script`);
+            continue;
+          }
+          // 403 often means proxy not ready or visitor token not yet in page
+          if (/403/.test(message) && round < rounds - 1) {
+            errors.push(`page-proxy tab ${tabId}: ${message} (retry)`);
+            continue;
+          }
+          errors.push(`page-proxy tab ${tabId}: ${message}`);
+        }
+      }
+      if (anyReceivingEndMissing && round < rounds - 1) {
+        continue;
+      }
+      if (anyReceivingEndMissing) {
+        errors.push(RECEIVING_END_HINT);
+      }
     }
   }
 
