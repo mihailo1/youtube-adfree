@@ -325,6 +325,9 @@ function renderPlayer(
   const elLayout = document.createElement("media-video-layout");
   // Always show chapter segments when a chapters track is present (embed can be narrow).
   (elLayout as HTMLElement & { sliderChaptersMinWidth?: number }).sliderChaptersMinWidth = 0;
+  // Keep settings/chapters menus portaled inside player-wrap (not document.body)
+  // so our Always Ad-Free row and CSS stay reachable.
+  (elLayout as HTMLElement & { menuContainer?: string | HTMLElement | null }).menuContainer = elPlayerWrap;
   // YouTube storyboard sprites → scrubber hover preview (not a single poster frame)
   const storyboardThumbs = buildStoryboardThumbs({
     spec: payload.storyboardSpec,

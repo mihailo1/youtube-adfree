@@ -1,13 +1,25 @@
 # Session notes — Ad-Free player (2026-07-28)
 
-Source of truth after context compact. **v1.1.0** released (committed + pushed).
+Source of truth after context compact. **v1.1.1** on `main` / GitHub.
 
 ## Projects
 
 | Project | Path | Status |
 |---------|------|--------|
-| **yt-addfree** | `~/Documents/reps.nosync/yt-addfree` | **v1.1.0** on `main` / GitHub |
+| **yt-addfree** | `~/Documents/reps.nosync/yt-addfree` | **v1.1.1** on `main` / GitHub |
 | **filler** | `~/Documents/reps.nosync/filler` | Pushed (`v1.4.1`) |
+
+---
+
+## v1.1.1 — Always Ad-Free toggle fix
+
+| Issue | Fix |
+|-------|-----|
+| ⚙ Settings → Always Ad-Free appeared but **always flipped back to Off** | Double-fire: `pointerup` on switch + `click` on row → `true` then immediate `false` |
+| Settings panel portaled outside player (earlier) | Document-wide inject + `menuContainer = #player-wrap`; styles not tied to `#player-wrap` only |
+| | Single click path, `pointer-events: none` on decorative checkbox, 350 ms debounce + busy guard |
+
+**Files:** `src/lib/ad-free/default-menu-item.ts`, `main.ts` (`menuContainer`), `player.css`
 
 ---
 

@@ -11,7 +11,7 @@
 
 # Session docs
 
-- `docs/SESSION-NOTES.md` — latest work log (**v1.1.0**)
+- `docs/SESSION-NOTES.md` — latest work log (**v1.1.1**)
 - `docs/CONTINUE-PROMPT.md` — paste-ready agent prompt
 - `docs/COMPACTION-INSTRUCTIONS.md` — Grok `/compact` keep/drop block
 - Parent compact: `../SESSION-COMPACT.md`
@@ -36,7 +36,7 @@
   - `keep-playing.ts` — blur keep-alive; gated by `isSafeToResume()`
 - Prefer page-proxy for InnerTube; extension-origin fetch often gets HTTP 403
 - **Chapters:** extract from `markersMap` / engagementPanels (`chapters.ts`); merge from watch-page `ytInitialData` when ANDROID_VR omits them; attach as `<track kind="chapters">` VTT; ~3px scrubber gaps; laconic list closes on select; never set `.vds-slider-track { background: transparent }` under chapters
-- **Always Ad-Free:** `isAdFreeDefault` default **false**; auto-enable on watch; manual YouTube sticks for that videoId
+- **Always Ad-Free:** `isAdFreeDefault` default **false**; row in ⚙ Settings via `default-menu-item.ts` (portaled panel inject; **single click + debounce** — do not wire both pointerup and click); auto-enable on watch; manual YouTube sticks for that videoId
 - **MSE duration:** always set `mediaSource.duration` (hint + sidx) — missing duration causes mid-file `currentTime→0` hang on play
 - **MSE mid A/V:** `ensureAvPlayable` extends the short track first; do not clearBuffered audio when it already covers wall-clock seek target
 - **Playhead:** `restoreMsePlayhead` if playhead leaves buffered mid range (snap-to-0)

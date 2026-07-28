@@ -1,6 +1,6 @@
 # YouTube Ad-Free
 
-**v1.1.0** — MV3 browser extension that swaps the YouTube watch player for an **ad-free in-page player**, with MSE adaptive seek, chapters, quality selection, captions, background playback, and the original download tooling from the upstream project.
+**v1.1.1** — MV3 browser extension that swaps the YouTube watch player for an **ad-free in-page player**, with MSE adaptive seek, chapters, quality selection, captions, background playback, and the original download tooling from the upstream project.
 
 **Repo:** [mihailo1/youtube-adfree](https://github.com/mihailo1/youtube-adfree)
 
@@ -91,7 +91,7 @@ Session / agent notes: [docs/SESSION-NOTES.md](docs/SESSION-NOTES.md).
 
 ## Versioning
 
-This fork is versioned independently (current **1.1.0**). Upstream downloader history remains in git history.
+This fork is versioned independently (current **1.1.1**). Upstream downloader history remains in git history.
 
 ## License
 

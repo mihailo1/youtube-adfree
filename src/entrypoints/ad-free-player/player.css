@@ -435,73 +435,10 @@ media-player[data-fullscreen] {
   margin: 0 6px;
 }
 
-/* ── Always Ad-Free toggle in settings menu ─────────────────────────── */
-#player-wrap .ytdl-always-adfree-section {
-  margin: 0 0 4px;
-  padding: 0;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
-}
-
-#player-wrap .ytdl-always-adfree {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  min-height: 48px;
-  padding: 10px 12px;
-  border-radius: 8px;
-  cursor: pointer;
-  transition: background 0.12s ease;
-}
-
-#player-wrap .ytdl-always-adfree:hover {
-  background: rgba(255, 255, 255, 0.06);
-}
-
-#player-wrap .ytdl-always-adfree-icon {
-  display: grid;
-  place-items: center;
-  flex-shrink: 0;
-  width: 28px;
-  height: 28px;
-  border-radius: 8px;
-  background: rgba(255, 0, 51, 0.16);
-  color: #ff4d6a;
-}
-
-#player-wrap .ytdl-always-adfree-text {
-  flex: 1 1 auto;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-#player-wrap .ytdl-always-adfree .vds-menu-item-label {
-  font: 600 13px/1.25 "YouTube Sans", Roboto, Arial, sans-serif;
-  color: #fff;
-}
-
-#player-wrap .ytdl-always-adfree-desc {
-  font: 400 11px/1.3 "YouTube Sans", Roboto, Arial, sans-serif;
-  color: rgba(255, 255, 255, 0.5);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-#player-wrap .ytdl-always-adfree-hint {
-  flex-shrink: 0;
-  font: 600 11px/1 "YouTube Sans", Roboto, Arial, sans-serif;
-  color: rgba(255, 255, 255, 0.45);
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-}
-
-#player-wrap .ytdl-always-adfree-checkbox.is-on,
-#player-wrap .ytdl-always-adfree-checkbox[aria-checked="true"] {
-  /* brand accent when on — theme vars still apply for motion */
-  --checkbox-active-bg: #ff0033;
-}
+/*
+ * Always Ad-Free row styles are injected by default-menu-item.ts (STYLE_ID)
+ * so they apply even when Vidstack portals the settings panel outside #player-wrap.
+ */
 
 /*
  * Chapters menu — laconic list: tight rows, start time chip, no bulky duration/thumbs.
