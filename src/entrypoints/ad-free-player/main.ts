@@ -328,6 +328,8 @@ function renderPlayer(
 
   const elPlayerWrap = document.createElement("div");
   elPlayerWrap.id = "player-wrap";
+  // Hide from first paint (before loader / media-player append)
+  elPlayerWrap.classList.add("is-buffering", "is-bootstrapping");
 
   const elPlayer = createMediaPlayerElement();
   // When chapters exist, leave title empty so Vidstack default layout shows
@@ -390,12 +392,23 @@ function renderPlayer(
     }
   }
 
-  const elLayout = document.createElement("media-video-layout");
+  const elLayout = document.createElement("media-video-layout") as HTMLElement & {
+    sliderChaptersMinWidth?: number;
+    menuContainer?: string | HTMLElement | null;
+    /** Default: width < 576 || height < 380 → small UI (caption/settings TOP). */
+    smallWhen?: "never" | boolean | ((q: { width: number; height: number }) => boolean);
+    menuGroup?: "top" | "bottom";
+  };
   // Always show chapter segments when a chapters track is present (embed can be narrow).
-  (elLayout as HTMLElement & { sliderChaptersMinWidth?: number }).sliderChaptersMinWidth = 0;
+  elLayout.sliderChaptersMinWidth = 0;
   // Keep settings/chapters menus portaled inside player-wrap (not document.body)
   // so our Always Ad-Free row and CSS stay reachable.
-  (elLayout as HTMLElement & { menuContainer?: string | HTMLElement | null }).menuContainer = elPlayerWrap;
+  elLayout.menuContainer = elPlayerWrap;
+  // YouTube embed is often ~670×378 — default smallWhen (height < 380) puts
+  // caption/settings/fullscreen in the TOP row (y≈2). That looked like a flash
+  // of "bottom" chrome stuck in the corner. Force large layout → bottom chrome.
+  elLayout.smallWhen = "never";
+  elLayout.menuGroup = "bottom";
   // Storyboard attached after first media ready — expanding 800+ frames blocks first paint
   // and felt like a second "reload" (loading → blank player → spinner).
   elPlayer.append(elProvider, elLayout);
@@ -425,7 +438,6 @@ function renderPlayer(
   elLoader.setAttribute("aria-hidden", "false");
   elLoader.innerHTML = "<div class=\"ytdl-loader-ring\" role=\"presentation\"></div>";
   elPlayerWrap.append(elLoader);
-  elPlayerWrap.classList.add("is-buffering", "is-bootstrapping");
 
   let engine: PlaybackEngine | null = null;
   let isBootstrapping = true;
@@ -838,18 +850,113 @@ function renderPlayer(
       });
     }
 
-    isBootstrapping = false;
-    elPlayerWrap.classList.remove("is-bootstrapping");
     const stillBusy = engine?.isBusy() ?? false;
     elPlayerWrap.classList.toggle("is-buffering", stillBusy);
     elLoader.setAttribute("aria-hidden", stillBusy ? "false" : "true");
-    // Wait two frames so Vidstack control groups lay out before fade-in
-    // (otherwise buttons flash top-right then jump to bottom chrome)
-    requestAnimationFrame(() => {
+
+    /** Snapshot chrome geometry for session-log (top-right flash diagnosis). */
+    function measureChrome(tag: string) {
+      const wrap = elPlayerWrap.getBoundingClientRect();
+      const elLayoutNode = elPlayer.querySelector("media-video-layout");
+      const buttons = [
+        ...elPlayer.querySelectorAll(
+          "media-fullscreen-button, media-caption-button, "
+          + "media-menu.vds-settings-menu media-menu-button.vds-button"
+        )
+      ] as HTMLElement[];
+      const btnSnap = buttons.slice(0, 6).map(el => {
+        const r = el.getBoundingClientRect();
+        return {
+          tag: el.tagName.toLowerCase(),
+          x: Math.round(r.left - wrap.left),
+          y: Math.round(r.top - wrap.top)
+        };
+      });
+      // Large layout: settings/caption/fs in bottom row. Small: y≈2 (top).
+      const btnsBottom = btnSnap.length > 0
+        && btnSnap.every(b => b.y >= wrap.height * 0.45);
+      log.info(`chrome ${tag}`, {
+        wrap: { w: Math.round(wrap.width), h: Math.round(wrap.height) },
+        layout: {
+          sm: elLayoutNode?.hasAttribute("data-sm") ?? null,
+          size: elLayoutNode?.getAttribute("data-size") ?? null
+        },
+        btnsBottom,
+        classes: elPlayerWrap.className,
+        btns: btnSnap
+      });
+      return { btnsBottom };
+    }
+
+    /** Reveal after large-layout bottom chrome is in place (btns y in lower half). */
+    const waitForBottomChrome = (): Promise<{ reason: string; frames: number }> =>
+      new Promise(resolve => {
+        const deadline = Date.now() + 2_500;
+        let frames = 0;
+        let lastLogFrame = -99;
+        log.info("chrome wait start");
+        measureChrome("wait-0");
+
+        const tick = () => {
+          frames += 1;
+          const shouldLog = frames <= 3
+            || frames - lastLogFrame >= 10;
+          const snap = shouldLog
+            ? measureChrome(`wait-f${frames}`)
+            : (() => {
+              const wrap = elPlayerWrap.getBoundingClientRect();
+              const buttons = [
+                ...elPlayer.querySelectorAll(
+                  "media-fullscreen-button, media-caption-button, "
+                  + "media-menu.vds-settings-menu media-menu-button.vds-button"
+                )
+              ] as HTMLElement[];
+              const btnsBottom = buttons.length > 0
+                && buttons.every(el => {
+                  const r = el.getBoundingClientRect();
+                  return r.height > 0 && r.top - wrap.top >= wrap.height * 0.45;
+                });
+              return { btnsBottom };
+            })();
+          if (shouldLog || snap.btnsBottom) {
+            lastLogFrame = frames;
+            if (snap.btnsBottom && !shouldLog) {
+              measureChrome(`wait-f${frames}`);
+            }
+          }
+          if (snap.btnsBottom && frames >= 2) {
+            resolve({ reason: "btns-bottom", frames });
+            return;
+          }
+          if (Date.now() >= deadline || frames > 120) {
+            measureChrome("wait-timeout");
+            resolve({
+              reason: Date.now() >= deadline ? "deadline" : "max-frames",
+              frames
+            });
+            return;
+          }
+          requestAnimationFrame(tick);
+        };
+        requestAnimationFrame(tick);
+      });
+
+    void waitForBottomChrome().then(result => {
+      log.info("chrome wait done", result);
       requestAnimationFrame(() => {
+        measureChrome("pre-reveal");
+        isBootstrapping = false;
         elPlayerWrap.classList.add("is-chrome-ready");
+        log.info("chrome ready class set");
+        requestAnimationFrame(() => {
+          elPlayerWrap.classList.remove("is-bootstrapping");
+          measureChrome("post-reveal-0");
+          window.setTimeout(() => measureChrome("post-reveal-50"), 50);
+          window.setTimeout(() => measureChrome("post-reveal-150"), 150);
+        });
       });
     });
+
     attachStoryboardWhenIdle();
     if (isEmbed) {
       log.info("ready → parent");

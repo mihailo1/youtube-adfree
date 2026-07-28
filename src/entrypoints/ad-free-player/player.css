@@ -315,27 +315,54 @@ media-player[data-fullscreen] {
   opacity: 1;
   visibility: visible;
 }
+
+/*
+ * Nuclear hide until last control group is measured at the bottom.
+ * visibility (not just opacity) — opacity alone still leaked a top-right flash.
+ */
+#player-wrap:not(.is-chrome-ready) media-player,
 #player-wrap.is-bootstrapping media-player {
-  opacity: 0;
-  pointer-events: none;
-}
-/* Hide chrome until layout settles — prevents top-right → bottom jump of buttons */
-#player-wrap:not(.is-chrome-ready) .vds-controls,
-#player-wrap:not(.is-chrome-ready) .vds-controls-group,
-#player-wrap.is-bootstrapping .vds-controls,
-#player-wrap.is-bootstrapping .vds-controls-group {
   opacity: 0 !important;
   visibility: hidden !important;
   pointer-events: none !important;
 }
-#player-wrap:not(.is-bootstrapping) media-player {
-  opacity: 1;
-  transition: opacity 0.15s ease;
+
+#player-wrap:not(.is-chrome-ready) media-controls,
+#player-wrap:not(.is-chrome-ready) .vds-controls,
+#player-wrap:not(.is-chrome-ready) .vds-load-container,
+#player-wrap:not(.is-chrome-ready) .vds-buffering-indicator,
+#player-wrap:not(.is-chrome-ready) .vds-start-duration,
+#player-wrap:not(.is-chrome-ready) media-controls-group,
+#player-wrap:not(.is-chrome-ready) .vds-controls-group,
+#player-wrap.is-bootstrapping media-controls,
+#player-wrap.is-bootstrapping .vds-controls,
+#player-wrap.is-bootstrapping .vds-load-container {
+  opacity: 0 !important;
+  visibility: hidden !important;
+  pointer-events: none !important;
 }
-#player-wrap.is-chrome-ready:not(.is-bootstrapping) media-player[data-controls] .vds-controls {
+
+/* Force column + spacers while hidden so bottom group is already at the bottom */
+#player-wrap media-player[data-view-type="video"] media-controls.vds-controls,
+#player-wrap media-player[data-view-type="video"] .vds-controls {
+  display: flex !important;
+  position: absolute !important;
+  inset: 0 !important;
+  flex-direction: column !important;
+  width: 100% !important;
+  height: 100% !important;
+  box-sizing: border-box !important;
+}
+
+#player-wrap .vds-controls-spacer {
+  flex: 1 1 0% !important;
+  min-height: 0 !important;
+}
+
+#player-wrap.is-chrome-ready:not(.is-bootstrapping) media-player {
   opacity: 1;
   visibility: visible;
-  transition: opacity 0.18s ease;
+  transition: opacity 0.2s ease;
 }
 
 .ytdl-loader-ring {

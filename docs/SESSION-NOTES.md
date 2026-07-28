@@ -1,79 +1,53 @@
-# Session notes — Ad-Free player (2026-07-28)
+# Session notes — Ad-Free player (2026-07-29)
 
-Source of truth after context compact. **v1.2.1** on `main`.
+Source of truth after context compact. **v1.2.2** on `main`.
 
 ## Projects
 
 | Project | Path | Status |
 |---------|------|--------|
-| **yt-addfree** | `~/Documents/reps.nosync/yt-addfree` | **v1.2.1** |
+| **yt-addfree** | `~/Documents/reps.nosync/yt-addfree` | **v1.2.2** |
 | **filler** | out of scope this session | — |
 
 ---
 
-## v1.2.1 — Alpha / polish
+## v1.2.2 — chrome layout fix
 
-### Features
+| Fix | Detail |
+|-----|--------|
+| **Top-right control flash** | YouTube embed ~670×378 hit Vidstack `smallWhen: height < 380` → small layout (caption/settings/fs at **y≈2**). Force `media-video-layout.smallWhen = "never"` + `menuGroup = "bottom"` so large bottom chrome always. |
+| **Reveal gate** | Wait until settings/caption/fs buttons measure in lower half before `is-chrome-ready` |
+| **Chrome session logs** | `player: chrome wait-*` / `pre-reveal` / `post-reveal-*` (layout.sm/size, btn y) |
+| **Always Ad-Free row** | More gap; no horizontal padding on the row |
 
-| Area | Detail |
-|------|--------|
-| **Hotkeys** | `hotkeys.ts` — YT-style Space/k, j/l, arrows, m/f/c, 0–9, speed, frame, PiP `i` |
-| **Quality memory** | `quality-pref.ts` → `local:adFreeQualityPref` |
-| **Quality in ⚙** | Submenu under Settings (no top-right chip; works fullscreen) |
-| **Always Ad-Free row** | Pill switch in Settings; re-inject survives Audio/Captions |
-| **Session diagnostics** | BG ring + popup Settings → **Diagnostics** Download/Copy/Clear |
-| **Simpler logs** | Default **info**; STAGE removed; forward to session log |
-| **Alpha pack** | `pnpm run alpha:pack` → `.output/youtube-adfree-*-chrome.zip` |
-| **Alpha docs** | `docs/ALPHA-TESTING.md` |
+## v1.2.1 — alpha / polish (shipped)
 
-### Always Ad-Free boot
-
-| Problem | Fix |
-|---------|-----|
-| YT flash before cover | `document_start` + early-hide CSS from `localStorage.ytdlAfDefault` |
-| 403 page-proxy race | `resolveStreamWithRetry` + BG multi-round; keep cover, no unpark |
-| Double player-init | Overlay root **fixed on `documentElement`**, not `#movie_player` |
-| Black paused | `preferPlay` / `paused=0` / `wasPlaying:!startPaused` |
-| Rebuffer flash | Skip push-snapshot on fresh iframe |
-
-### Chapters (SPA-safe)
-
-- Extract scoped by `videoId` + duration fit (no cross-video leak)
-- **Late merge** after Always Ad-Free: retries 0.6–6s → bridge `set-chapters`
-- Files: `chapters.ts`, `bridge.ts` (`set-chapters`), `ad-free-watch` schedule, player `applyChapters`
-
-### Settings UI
-
-- YouTube-ish panel: blur, 12px radius, translucent bg
-- Quality **submenu** (`media-menu`) with blur on expanded header
-- Menu extras re-inject while ⚙ open (Lit wipes children on submenu nav)
+Hotkeys, quality memory, quality **Settings submenu**, Always Ad-Free boot (fixed overlay, early-hide, resolve retry), session Diagnostics export, chapters videoId-scoped + late `set-chapters`, STAGE removed, alpha pack docs.
 
 ### Overlay architecture
 
 - Root **`position: fixed` on `document.documentElement`**
-- `syncRootLayout()` mirrors `#movie_player` rect
 - Never reparent iframe after create
 - Session log: `session-log.ts` + BG handlers
 
-### Key files (v1.2.x)
+### Key files
 
 ```
 src/lib/ad-free/hotkeys.ts
 src/lib/ad-free/quality-pref.ts
-src/lib/ad-free/quality-menu.ts      # Settings submenu
-src/lib/ad-free/player-toast.ts
+src/lib/ad-free/quality-menu.ts
 src/lib/ad-free/session-log.ts
 src/lib/ad-free/debug-log.ts
 src/lib/ad-free/chapters.ts
 src/lib/ad-free/default-menu-item.ts
 src/lib/ad-free/content-overlay.ts
-src/entrypoints/ad-free-watch.content.ts
-src/entrypoints/ad-free-player/main.ts
+src/entrypoints/ad-free-player/main.ts    # smallWhen never, chrome measure
 src/entrypoints/ad-free-player/player.css
+src/entrypoints/ad-free-watch.content.ts
 src/entrypoints/background/handlers/session-log-handlers.ts
 src/entrypoints/popup/settings/sections/DiagnosticsSettings.svelte
 docs/ALPHA-TESTING.md
-docs/mse-phase3.md                   # draft deferred
+docs/mse-phase3.md                        # draft deferred
 ```
 
 ### Build
@@ -98,14 +72,15 @@ pnpm run alpha:pack # zip for testers
 7. CS stream via **StoreAdFreeStreamPayload**  
 8. Rebuild: `nvm use 20 && pnpm build`  
 9. Chapters: videoId + duration fit; late merge OK  
+10. **`media-video-layout.smallWhen = "never"`** — embed height often &lt; 380; small layout puts chrome on top  
 
 ---
 
 ## Open / optional later
 
-- [ ] **MSE Phase 3** (draft, deferred): incremental rebuffer — `docs/mse-phase3.md`  
-- [ ] Chapters still rare miss if YT never paints markers (API empty + no DOM)  
-- [ ] Alpha feedback loop  
+- [ ] **MSE Phase 3** (draft, deferred): `docs/mse-phase3.md`  
+- [ ] Chapters rare miss if YT never paints markers  
+- [ ] Alpha feedback  
 
 ---
 
@@ -113,6 +88,6 @@ pnpm run alpha:pack # zip for testers
 
 | Role | Steps |
 |------|--------|
-| End user / alpha | Unzip → Load unpacked → see `docs/ALPHA-TESTING.md` |
-| After code change | `nvm use 20 && pnpm build` → reload → **new** YT tab |
+| Alpha | Unzip → Load unpacked → `docs/ALPHA-TESTING.md` |
+| After code | `nvm use 20 && pnpm build` → reload → **new** YT tab |
 | Session log | Popup → Settings → Diagnostics → Download log |

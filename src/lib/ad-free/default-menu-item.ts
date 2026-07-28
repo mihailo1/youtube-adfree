@@ -39,11 +39,12 @@ const TOGGLE_CSS = `
 .${ROW_CLASS} {
   display: flex !important;
   align-items: center;
-  gap: 12px;
-  height: 48px;
-  min-height: 48px;
-  max-height: 48px;
-  padding: 0 12px !important;
+  /* Generous space: icon ··· text ··· switch */
+  gap: 18px;
+  height: 56px;
+  min-height: 56px;
+  max-height: 56px;
+  padding: 0 !important;
   border-radius: 12px;
   cursor: pointer;
   box-sizing: border-box;
@@ -55,9 +56,10 @@ const TOGGLE_CSS = `
 .${ROW_CLASS} .ytdl-always-adfree-icon {
   display: grid;
   place-items: center;
-  flex: 0 0 32px;
-  width: 32px;
-  height: 32px;
+  flex: 0 0 36px;
+  width: 36px;
+  height: 36px;
+  margin-right: 4px;
   border-radius: 50%;
   background: linear-gradient(145deg, rgba(255, 0, 51, 0.28), rgba(255, 0, 51, 0.1));
   color: #ff5a73;
@@ -68,7 +70,9 @@ const TOGGLE_CSS = `
   min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 1px;
+  gap: 5px;
+  padding-right: 14px;
+  margin-right: 4px;
 }
 .${ROW_CLASS} .ytdl-always-adfree-label {
   font: 500 14px/1.2 "YouTube Sans", Roboto, Arial, sans-serif !important;
@@ -76,7 +80,7 @@ const TOGGLE_CSS = `
   margin: 0 !important;
 }
 .${ROW_CLASS} .ytdl-always-adfree-desc {
-  font: 400 11.5px/1.25 "YouTube Sans", Roboto, Arial, sans-serif;
+  font: 400 11.5px/1.3 "YouTube Sans", Roboto, Arial, sans-serif;
   color: rgba(255, 255, 255, 0.5);
   white-space: nowrap;
   overflow: hidden;
@@ -85,14 +89,15 @@ const TOGGLE_CSS = `
 .${ROW_CLASS} .ytdl-always-adfree-hint {
   display: none; /* checkbox is enough; keeps row stable */
 }
-/* YouTube-like pill switch */
+/* YouTube-like pill switch — pinned to trailing edge */
 .${ROW_CLASS} .ytdl-always-adfree-checkbox {
   position: relative;
-  flex: 0 0 40px;
-  width: 40px;
-  min-width: 40px;
-  height: 22px;
-  border-radius: 11px;
+  flex: 0 0 44px;
+  width: 44px;
+  min-width: 44px;
+  height: 24px;
+  margin-left: auto;
+  border-radius: 12px;
   background: rgba(255, 255, 255, 0.18) !important;
   box-shadow: none !important;
   pointer-events: none;
@@ -104,8 +109,8 @@ const TOGGLE_CSS = `
   position: absolute;
   top: 2px;
   left: 2px;
-  width: 18px;
-  height: 18px;
+  width: 20px;
+  height: 20px;
   border-radius: 50%;
   background: #fff;
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.35);
@@ -117,7 +122,7 @@ const TOGGLE_CSS = `
 }
 .${ROW_CLASS} .ytdl-always-adfree-checkbox[aria-checked="true"]::after,
 .${ROW_CLASS} .ytdl-always-adfree-checkbox.is-on::after {
-  transform: translateX(18px);
+  transform: translateX(20px);
 }
 
 /* Fallback surface tokens if player.css not yet applied to portaled nodes */

@@ -1,6 +1,6 @@
 # Alpha testing — YouTube Ad-Free
 
-Private alpha for the **in-page Ad-Free player** (**v1.2.1**). Not published to the Chrome Web Store yet.
+Private alpha for the **in-page Ad-Free player** (**v1.2.2**). Not published to the Chrome Web Store yet.
 
 ## Install (Chrome / Edge / Brave)
 
