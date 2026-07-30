@@ -1,9 +1,10 @@
 # Continue prompt (copy-paste into new agent session)
 
 ```
-Continue yt-addfree at ~/Documents/reps.nosync/yt-addfree (v1.2.3).
+Continue yt-addfree at ~/Documents/reps.nosync/yt-addfree (v1.2.4).
 Read docs/SESSION-NOTES.md and CLAUDE.md first.
 
+v1.2.4: Always Ad-Free settings row padding 0 1rem.
 v1.2.3 highlights:
 - MSE: re-resolve googlevideo URLs on range 403/network + pump backoff; start prefetch ≥3s
 - Theater wide button (YT size icons, hotkey t) ↔ ytd-watch-flexy.theater
@@ -26,7 +27,7 @@ Task:
 ## Short one-liner
 
 ```
-Continue yt-addfree v1.2.3 @ ~/Documents/reps.nosync/yt-addfree. Read docs/SESSION-NOTES.md + CLAUDE.md. Build: nvm use 20 && pnpm build. Task: <YOUR TASK>
+Continue yt-addfree v1.2.4 @ ~/Documents/reps.nosync/yt-addfree. Read docs/SESSION-NOTES.md + CLAUDE.md. Build: nvm use 20 && pnpm build. Task: <YOUR TASK>
 ```
 
 ---

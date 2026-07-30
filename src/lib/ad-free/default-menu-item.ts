@@ -44,7 +44,7 @@ const TOGGLE_CSS = `
   height: 56px;
   min-height: 56px;
   max-height: 56px;
-  padding: 0 !important;
+  padding: 0rem 1rem !important;
   border-radius: 12px;
   cursor: pointer;
   box-sizing: border-box;

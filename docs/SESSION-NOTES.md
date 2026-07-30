@@ -1,15 +1,21 @@
 # Session notes — Ad-Free player (2026-07-30)
 
-Source of truth after context compact. **v1.2.3** on `main`.
+Source of truth after context compact. **v1.2.4** on `main`.
 
 ## Projects
 
 | Project | Path | Status |
 |---------|------|--------|
-| **yt-addfree** | `~/Documents/reps.nosync/yt-addfree` | **v1.2.3** |
+| **yt-addfree** | `~/Documents/reps.nosync/yt-addfree` | **v1.2.4** |
 | **filler** | out of scope this session | — |
 
 ---
+
+## v1.2.4 — Always Ad-Free row padding
+
+| Fix | Detail |
+|-----|--------|
+| **Always Ad-Free menu row** | `.ytdl-always-adfree` padding `0 1rem` for horizontal inset in Settings ⚙ |
 
 ## v1.2.3 — stream resilience, theater, live URLs, grid cleanup
 

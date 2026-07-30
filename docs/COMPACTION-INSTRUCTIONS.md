@@ -10,6 +10,7 @@ Paste into `/compact` or use as the compact summary seed.
 
 ## Version / git
 
+- **v1.2.4** — Always Ad-Free settings row `padding: 0 1rem`
 - **v1.2.3** — MSE URL refresh on 403; theater button; `/live/` ids; cover watchdog; extended logs; no grid download chips
 - **v1.2.2** — force large video layout (`smallWhen=never`); chrome bottom controls
 - **v1.2.1** — alpha polish, session logs, quality submenu, chapters late-merge
@@ -63,13 +64,14 @@ Paste into `/compact` or use as the compact summary seed.
 ## Paste block
 
 ```
-COMPACT yt-addfree only @ ~/Documents/reps.nosync/yt-addfree v1.2.3.
+COMPACT yt-addfree only @ ~/Documents/reps.nosync/yt-addfree v1.2.4.
 
-Keep: fixed overlay on documentElement; Always Ad-Free boot + cover watchdog/releaseCover;
-single-rendition engine+MSE; range 403 → re-resolve+backoff; theater button (YT icons, t);
-videoId from /watch|/live|/shorts|/embed; quality Settings submenu; session Diagnostics +
-Dev extended logs; chapters videoId-scoped + late set-chapters; smallWhen="never";
-no grid download chips; no STAGE; build nvm20+pnpm build; alpha-pack; mse-phase3 deferred.
+Keep: fixed overlay on documentElement; Always Ad-Free boot + cover watchdog/releaseCover
+(+ settings row padding 0 1rem); single-rendition engine+MSE; range 403 → re-resolve+backoff;
+theater button (YT icons, t); videoId from /watch|/live|/shorts|/embed; quality Settings submenu;
+session Diagnostics + Dev extended logs; chapters videoId-scoped + late set-chapters;
+smallWhen="never"; no grid download chips; no STAGE; build nvm20+pnpm build; alpha-pack;
+mse-phase3 deferred.
 
 Read docs/SESSION-NOTES.md + CLAUDE.md. Ignore other projects.
 ```
