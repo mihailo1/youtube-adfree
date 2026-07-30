@@ -10,6 +10,7 @@ Paste into `/compact` or use as the compact summary seed.
 
 ## Version / git
 
+- **v1.2.3** — MSE URL refresh on 403; theater button; `/live/` ids; cover watchdog; extended logs; no grid download chips
 - **v1.2.2** — force large video layout (`smallWhen=never`); chrome bottom controls
 - **v1.2.1** — alpha polish, session logs, quality submenu, chapters late-merge
 - Prior: **v1.1.1** Always toggle; **v1.1.0** MSE/chapters
@@ -24,13 +25,17 @@ Paste into `/compact` or use as the compact summary seed.
    - Never reparent ad-free iframe after create
    - **`media-video-layout.smallWhen = "never"`** + `menuGroup = "bottom"`  
      (default smallWhen is `width < 576 \|\| height < 380`; YT embed ~378h put caption/settings/fs at top y≈2)
+   - **MSE range death**: re-resolve stream URLs + backoff (do not only retry same range)
+   - **Video id**: `/watch?v=`, `/live/ID`, `/shorts/`, `/embed/`
 
 2. **v1.2.x product**
    - Hotkeys, quality-pref, quality Settings submenu
-   - Always Ad-Free early-hide + preferPlay + resolve retry without unpark
-   - Session log export: popup Settings → Diagnostics
+   - Always Ad-Free early-hide + preferPlay + resolve retry; cover watchdog / releaseCover
+   - Theater wide button (YT icons, **t**) via parent flexy.theater
+   - Session log export: popup Settings → Diagnostics (+ **Dev extended logs**)
    - Chapters: videoId + duration fit; late `set-chapters`
-   - Logs: default **info**, no STAGE
+   - Logs: default **info**, no STAGE; extended via `log.ext`
+   - No home/search grid download chips
 
 3. **Build**
    - `nvm use 20 && pnpm build` → `.output/chrome-mv3/`
@@ -45,20 +50,26 @@ Paste into `/compact` or use as the compact summary seed.
 
 ## Drop from compact
 
-- Full chrome wait frame dumps once summarized (root cause: smallWhen height &lt; 380)
-- Intermediate flicker debug iterations
+- Full chrome wait frame dumps (root cause: smallWhen height &lt; 380)
+- Intermediate 403 log dumps once summarized (re-resolve + backoff shipped)
+- Grid download injection history (disabled)
 
 ## After compact — optional next
 
 1. Alpha feedback  
-2. MSE Phase 3 if scrub latency is the goal  
+2. Live stream format edge cases  
+3. MSE Phase 3 if scrub latency is the goal  
 
 ## Paste block
 
 ```
-COMPACT yt-addfree only @ ~/Documents/reps.nosync/yt-addfree v1.2.2.
+COMPACT yt-addfree only @ ~/Documents/reps.nosync/yt-addfree v1.2.3.
 
-Keep: fixed overlay on documentElement; Always Ad-Free boot; single-rendition engine+MSE; quality Settings submenu; session Diagnostics; chapters videoId-scoped + late set-chapters; media-video-layout.smallWhen="never" (embed h≈378 → small top chrome otherwise); no STAGE; build nvm20+pnpm build; alpha-pack docs/ALPHA-TESTING.md; mse-phase3 deferred.
+Keep: fixed overlay on documentElement; Always Ad-Free boot + cover watchdog/releaseCover;
+single-rendition engine+MSE; range 403 → re-resolve+backoff; theater button (YT icons, t);
+videoId from /watch|/live|/shorts|/embed; quality Settings submenu; session Diagnostics +
+Dev extended logs; chapters videoId-scoped + late set-chapters; smallWhen="never";
+no grid download chips; no STAGE; build nvm20+pnpm build; alpha-pack; mse-phase3 deferred.
 
 Read docs/SESSION-NOTES.md + CLAUDE.md. Ignore other projects.
 ```

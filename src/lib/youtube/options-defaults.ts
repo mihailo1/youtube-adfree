@@ -26,6 +26,7 @@ export const INITIAL_OPTIONS: Options = {
   enhancedBitrate: true,
   isShowNativeDownload: false,
   isAdFreeDefault: false,
+  isAdFreeDevExtendedLogs: false,
   isNotifyOnIdle: false,
   isRevealOnComplete: false,
   playlistDownloadMode: PlaylistDownloadMode.Fast,

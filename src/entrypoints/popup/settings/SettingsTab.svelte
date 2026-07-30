@@ -24,7 +24,7 @@
   <PlaylistSettings {options} />
   <AudioSubtitleSettings {options} slideDuration={SLIDE_DURATION} />
   <CompletionSettings {options} />
-  <DiagnosticsSettings />
+  <DiagnosticsSettings {options} />
 </div>
 
 <style>

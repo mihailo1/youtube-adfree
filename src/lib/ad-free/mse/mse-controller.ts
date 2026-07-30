@@ -12,7 +12,12 @@ import {
   lookupByteForTime
 } from "./fragment-index";
 import { findMoofOffsetInBuffer, formatBytes } from "./mp4-boxes";
-import { fetchByteRange, fetchInitSegment } from "./range-fetch";
+import {
+  fetchByteRange,
+  fetchInitSegment,
+  isHttp403Error,
+  isRangeUrlExpiredError
+} from "./range-fetch";
 
 export type SpikeTrack = {
   label: string;
@@ -20,6 +25,11 @@ export type SpikeTrack = {
   mimeType: string;
   height?: number;
   bitrate?: number;
+};
+
+export type StreamUrlPair = {
+  videoUrl: string;
+  audioUrl: string;
 };
 
 export type SpikePlayerOptions = {
@@ -41,6 +51,11 @@ export type SpikePlayerOptions = {
    * Default true for spike harness.
    */
   autoplay?: boolean;
+  /**
+   * Re-resolve googlevideo signed URLs when range fetch gets 403 / network death.
+   * Same itag content — byte offsets stay valid. Return null to give up.
+   */
+  refreshUrls?: () => Promise<StreamUrlPair | null>;
 };
 
 export const MSE_RELOAD_REQUIRED = "MSE_RELOAD_REQUIRED";
@@ -473,9 +488,114 @@ export async function startMseSession(options: SpikePlayerOptions): Promise<MseS
     onState,
     durationHint,
     handleUserSeek = true,
-    autoplay = true
+    autoplay = true,
+    refreshUrls
   } = options;
   const abort = new AbortController();
+  /** Serialize re-resolve so A/V pumps don't stampede page-proxy. */
+  let refreshInFlight: Promise<boolean> | null = null;
+  let lastRefreshAt = 0;
+  const REFRESH_COOLDOWN_MS = 8_000;
+  const PUMP_MAX_BACKOFF_MS = 8_000;
+
+  async function tryRefreshStreamUrls(reason: string): Promise<boolean> {
+    if (!refreshUrls || stopped || abort.signal.aborted) {
+      return false;
+    }
+    if (refreshInFlight) {
+      return refreshInFlight;
+    }
+    if (Date.now() - lastRefreshAt < REFRESH_COOLDOWN_MS) {
+      log("url refresh cooldown", { reason, waitMs: REFRESH_COOLDOWN_MS });
+      return false;
+    }
+    refreshInFlight = (async () => {
+      lastRefreshAt = Date.now();
+      log("url refresh start", { reason });
+      onState?.("url-refresh");
+      try {
+        const next = await refreshUrls();
+        if (!next?.videoUrl || !next?.audioUrl || stopped || abort.signal.aborted) {
+          log("url refresh empty", { reason });
+          return false;
+        }
+        if (next.videoUrl === video.url && next.audioUrl === audio.url) {
+          log("url refresh same urls", { reason });
+          return false;
+        }
+        // Drop cached init for old signed URLs (new hosts / sigs)
+        initSegmentCache.delete(video.url);
+        initSegmentCache.delete(audio.url);
+        video.url = next.videoUrl;
+        audio.url = next.audioUrl;
+        log("url refresh ok", {
+          reason,
+          videoHost: (() => {
+            try {
+              return new URL(next.videoUrl).hostname;
+            } catch {
+              return "?";
+            }
+          })()
+        });
+        return true;
+      } catch (error) {
+        log("url refresh failed", {
+          reason,
+          error: error instanceof Error ? error.message : String(error)
+        });
+        return false;
+      } finally {
+        refreshInFlight = null;
+      }
+    })();
+    return refreshInFlight;
+  }
+
+  async function fetchRangeResilient(
+    label: string,
+    url: string,
+    start: number,
+    end: number
+  ): Promise<Uint8Array> {
+    // Up to 2 attempts with current URL, then one re-resolve + retry
+    let lastError: unknown;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      throwIfStopped();
+      const activeUrl = label === "audio" ? audio.url : video.url;
+      try {
+        const { bytes } = await fetchByteRange(activeUrl, start, end, abort.signal);
+        return bytes;
+      } catch (error) {
+        lastError = error;
+        if (abort.signal.aborted || stopped) {
+          throw error;
+        }
+        if (!isRangeUrlExpiredError(error)) {
+          throw error;
+        }
+        const hard403 = isHttp403Error(error);
+        // Attempt 0–1: short backoff; on 403 skip straight toward refresh after first try
+        if (attempt === 0 && !hard403) {
+          await new Promise(resolve => window.setTimeout(resolve, 400));
+          continue;
+        }
+        if (attempt < 2) {
+          const refreshed = await tryRefreshStreamUrls(
+            `${label}-range-${hard403 ? "403" : "net"}`
+          );
+          if (refreshed) {
+            continue;
+          }
+          if (!hard403) {
+            await new Promise(resolve => window.setTimeout(resolve, 600));
+            continue;
+          }
+        }
+      }
+    }
+    throw lastError instanceof Error ? lastError : new Error(String(lastError));
+  }
 
   const videoMime = fullMime(video);
   const audioMime = fullMime(audio);
@@ -764,7 +884,9 @@ export async function startMseSession(options: SpikePlayerOptions): Promise<MseS
         break;
       }
       const end = Math.min(start + CHUNK - 1, pump.contentLength - 1);
-      const { bytes } = await fetchByteRange(url, start, end, abort.signal);
+      // `url` arg kept for call-site clarity; resilient fetch always uses live track URLs
+      void url;
+      const bytes = await fetchRangeResilient(label, url, start, end);
       await appendWithEvict(label, sourceBuffer, bytes);
       pump.nextByte = start + bytes.byteLength;
       pump.fetched += bytes.byteLength;
@@ -792,6 +914,7 @@ export async function startMseSession(options: SpikePlayerOptions): Promise<MseS
     pump: TrackPump,
     prefer: boolean
   ): Promise<void> {
+    let failStreak = 0;
     while (!stopped && !abort.signal.aborted && !pump.done) {
       if (pumpsPaused || rebufferBusy) {
         await new Promise(resolve => window.setTimeout(resolve, 80));
@@ -831,10 +954,12 @@ export async function startMseSession(options: SpikePlayerOptions): Promise<MseS
       const end = Math.min(start + CHUNK - 1, pump.contentLength - 1);
 
       try {
-        const { bytes } = await fetchByteRange(url, start, end, abort.signal);
+        void url;
+        const bytes = await fetchRangeResilient(label, url, start, end);
         await appendWithEvict(label, sourceBuffer, bytes);
         pump.nextByte = start + bytes.byteLength;
         pump.fetched += bytes.byteLength;
+        failStreak = 0;
         if (bytes.byteLength === 0) {
           pump.done = true;
         }
@@ -846,11 +971,26 @@ export async function startMseSession(options: SpikePlayerOptions): Promise<MseS
           || String(error).includes("AbortError")) {
           return;
         }
-        log(`${label} pump error`, { error: String(error), start, end });
+        failStreak += 1;
+        const backoff = Math.min(
+          PUMP_MAX_BACKOFF_MS,
+          500 * (2 ** Math.min(failStreak - 1, 4))
+        );
+        log(`${label} pump error`, {
+          error: String(error),
+          start,
+          end,
+          failStreak,
+          backoffMs: backoff
+        });
         if (isQuotaExceeded(error)) {
           await new Promise(resolve => window.setTimeout(resolve, 1500));
+        } else if (isRangeUrlExpiredError(error) && failStreak >= 2) {
+          // Extra re-resolve outside resilient fetch (cooldown may have blocked)
+          await tryRefreshStreamUrls(`${label}-pump-streak`);
+          await new Promise(resolve => window.setTimeout(resolve, backoff));
         } else {
-          await new Promise(resolve => window.setTimeout(resolve, 500));
+          await new Promise(resolve => window.setTimeout(resolve, backoff));
         }
       }
     }
@@ -1349,7 +1489,8 @@ export async function startMseSession(options: SpikePlayerOptions): Promise<MseS
       audioChunks: START_PREFETCH_AUDIO,
       from: startByteVideo
     });
-    // From t=0 both tracks start near init; pull in parallel.
+    // Land first buffer ASAP (parallel), then fill to PLAY_AHEAD_S —
+    // high-bitrate 1080p only gets ~2s from one 512KB chunk (underrun flash).
     await Promise.all([
       prefetchTrack("video", video.url, videoSb, videoPump, {
         maxChunks: START_PREFETCH_VIDEO,
@@ -1358,6 +1499,19 @@ export async function startMseSession(options: SpikePlayerOptions): Promise<MseS
       prefetchTrack("audio", audio.url, audioSb, audioPump, {
         maxChunks: START_PREFETCH_AUDIO,
         stopOnFirstBuffer: true
+      })
+    ]);
+    const vStart = firstBufferedStart(videoSb) ?? 0;
+    await Promise.all([
+      prefetchTrack("video", video.url, videoSb, videoPump, {
+        maxChunks: MID_FILL_CHUNKS,
+        coverTime: vStart,
+        minAhead: PLAY_AHEAD_S
+      }),
+      prefetchTrack("audio", audio.url, audioSb, audioPump, {
+        maxChunks: MID_FILL_CHUNKS,
+        coverTime: vStart,
+        minAhead: PLAY_AHEAD_S
       })
     ]);
   }
@@ -1826,6 +1980,8 @@ export function createMseController(options: {
   onState?: (state: string) => void;
   /** Default false — PlaybackEngine owns seek. Spike can pass true. */
   handleUserSeek?: boolean;
+  /** Re-resolve stream URLs on 403 / network death during range fetch. */
+  refreshUrls?: () => Promise<StreamUrlPair | null>;
 }): MseController {
   let session: MseSessionHandle | null = null;
   let lastLoad: MseLoadOpts | null = null;
@@ -1851,7 +2007,7 @@ export function createMseController(options: {
   }
 
   async function loadInternal(opts: MseLoadOpts) {
-    lastLoad = opts;
+    lastLoad = { ...opts };
     await hardDetachVideo();
     const audioMime = opts.audioMime ?? "audio/mp4; codecs=\"mp4a.40.2\"";
     session = await startMseSession({
@@ -1872,7 +2028,18 @@ export function createMseController(options: {
       onState: options.onState,
       handleUserSeek: options.handleUserSeek ?? false,
       // Engine owns play — avoids suppress-play-during-busy flap
-      autoplay: options.handleUserSeek === true
+      autoplay: options.handleUserSeek === true,
+      refreshUrls: options.refreshUrls
+        ? async () => {
+          const next = await options.refreshUrls!();
+          // Keep seek()/rebuild on the latest signed URLs
+          if (next && lastLoad) {
+            lastLoad.videoUrl = next.videoUrl;
+            lastLoad.audioUrl = next.audioUrl;
+          }
+          return next;
+        }
+        : undefined
     });
   }
 

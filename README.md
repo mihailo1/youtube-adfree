@@ -1,6 +1,6 @@
 # YouTube Ad-Free
 
-**v1.2.2** — MV3 browser extension that swaps the YouTube watch player for an **ad-free in-page player**, with MSE adaptive seek, chapters, YouTube-style hotkeys, remembered quality (Settings ⚙ submenu), Always Ad-Free, session diagnostic export, captions, background playback, and the original download tooling from the upstream project.
+**v1.2.3** — MV3 browser extension that swaps the YouTube watch player for an **ad-free in-page player**, with MSE adaptive seek (auto re-resolve on CDN 403), theater/wide mode, chapters, YouTube-style hotkeys (incl. **t**), remembered quality (Settings ⚙ submenu), Always Ad-Free (`/watch` + `/live`), session diagnostic export, captions, background playback, and optional download tooling.
 
 **Repo:** [mihailo1/youtube-adfree](https://github.com/mihailo1/youtube-adfree)
 
@@ -8,15 +8,16 @@ Built on top of [avi12/youtube-downloader](https://github.com/avi12/youtube-down
 
 ## Features
 
-- **In-page toggle** — **Ad-Free** chip on the top-left of the YouTube player; no extra tab
+- **In-page toggle** — **Ad-Free** chip on the top-left of the YouTube player; no extra tab (`/watch`, `/live`, shorts)
 - **Always Ad-Free** — optional default (off by default): Settings ⚙ in the player or popup → open watch pages in Ad-Free automatically; mid-ad entry autoplays content (not the ad clock)
 - **Ad-free playback** — streams via ANDROID_VR InnerTube (direct CDN URLs), not the YouTube HTML5 ad pipeline
-- **MSE adaptive** — dual-track Media Source for high-quality adaptive streams; reliable mid-file scrub
+- **MSE adaptive** — dual-track Media Source; re-resolves stream URLs if googlevideo range fetch dies mid-play
+- **Theater / wide** — YT size-button icons before fullscreen; hotkey `t`; keeps page layout when switching back
 - **Chapters** — YouTube chapter markers on the scrubber + compact chapter list
-- **Hotkeys** — YouTube-style: `j`/`l`, arrows, `m`, `f`, `c`, `0`–`9`, speed `<`/`>`, frame step, PiP `i`
+- **Hotkeys** — YouTube-style: `j`/`l`, arrows, `m`, `f`, `c`, `t`, `0`–`9`, speed `<`/`>`, frame step, PiP `i`
 - **Remember quality** — last chosen height/type restored on the next video
 - **Quality menu** — Settings ⚙ → Quality submenu; engine single-rendition loads (no multi-src buffer bloat)
-- **Diagnostics (alpha)** — popup Settings → download session log for bug reports
+- **Diagnostics (alpha)** — popup Settings → download session log; optional **Dev extended logs**
 - **Captions** — WebVTT tracks from the player response / page data (Settings → Captions)
 - **State sync** — time, volume, rate, and play/pause intent preserved when switching YouTube ↔ Ad-Free
 - **Unload original** — while Ad-Free is active the native player is parked and media is detached to free memory

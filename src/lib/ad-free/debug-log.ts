@@ -31,6 +31,8 @@ export type AdFreeLogEntry = {
 
 const RING_MAX = 400;
 const PREFIX = "[ytdl-af]";
+/** localStorage mirror so content script can enable extended logs at document_start. */
+export const AD_FREE_EXTENDED_LS_KEY = "ytdlAfExtendedLogs";
 
 const LEVEL_RANK: Record<AdFreeLogLevel, number> = {
   debug: 10,
@@ -41,6 +43,7 @@ const LEVEL_RANK: Record<AdFreeLogLevel, number> = {
 
 type LogApi = {
   enabled: boolean;
+  extended: boolean;
   minLevel: AdFreeLogLevel;
   entries: AdFreeLogEntry[];
   dump: () => AdFreeLogEntry[];
@@ -48,6 +51,7 @@ type LogApi = {
   copy: () => Promise<void>;
   clear: () => void;
   setEnabled: (value: boolean) => void;
+  setExtended: (value: boolean) => void;
   setMinLevel: (level: AdFreeLogLevel) => void;
 };
 
@@ -67,10 +71,21 @@ function readEnabledDefault(): boolean {
   return true;
 }
 
+function readExtendedDefault(): boolean {
+  try {
+    const stored = globalThis.localStorage?.getItem(AD_FREE_EXTENDED_LS_KEY);
+    return stored === "1" || stored === "true";
+  } catch {
+    return false;
+  }
+}
+
 const ring: AdFreeLogEntry[] = [];
 let isEnabled = readEnabledDefault();
-/** Alpha default: info — skip noisy debug chatter. */
-let minLevel: AdFreeLogLevel = "info";
+/** Verbose path (nav/cover/shell) — off by default; toggle in Settings → Diagnostics. */
+let isExtended = readExtendedDefault();
+/** Alpha default: info — skip noisy debug chatter. Extended forces debug floor. */
+let minLevel: AdFreeLogLevel = isExtended ? "debug" : "info";
 const logContext = detectLogContext();
 
 /** Background SW installs this so logs never self-message. */
@@ -168,6 +183,28 @@ export function adFreeLog(
   }
 }
 
+/**
+ * When true, `log.ext()` lines go to session log as **info**
+ * (so they appear in the exported Diagnostics log).
+ */
+export function isAdFreeExtendedLogs(): boolean {
+  return isExtended;
+}
+
+export function setAdFreeExtendedLogs(value: boolean) {
+  isExtended = value;
+  minLevel = value ? "debug" : "info";
+  try {
+    if (value) {
+      globalThis.localStorage?.setItem(AD_FREE_EXTENDED_LS_KEY, "1");
+    } else {
+      globalThis.localStorage?.removeItem(AD_FREE_EXTENDED_LS_KEY);
+    }
+  } catch {
+    // ignore
+  }
+}
+
 export function createAdFreeLogger(scope: string) {
   return {
     debug(message: string, data?: unknown) {
@@ -181,6 +218,16 @@ export function createAdFreeLogger(scope: string) {
     },
     error(message: string, data?: unknown) {
       adFreeLog(scope, message, data, "error");
+    },
+    /**
+     * Extended diagnostics: only when Dev extended logs is on.
+     * Written as **info** so session export includes them.
+     */
+    ext(message: string, data?: unknown) {
+      if (!isExtended) {
+        return;
+      }
+      adFreeLog(scope, message, data, "info");
     },
     child(subScope: string) {
       return createAdFreeLogger(`${scope}:${subScope}`);
@@ -264,6 +311,12 @@ function installGlobalApi() {
     set enabled(value: boolean) {
       isEnabled = value;
     },
+    get extended() {
+      return isExtended;
+    },
+    set extended(value: boolean) {
+      setAdFreeExtendedLogs(value);
+    },
     get minLevel() {
       return minLevel;
     },
@@ -300,6 +353,10 @@ function installGlobalApi() {
         // ignore
       }
       console.info(`${PREFIX} logging ${value ? "on" : "off"}`);
+    },
+    setExtended(value: boolean) {
+      setAdFreeExtendedLogs(value);
+      console.info(`${PREFIX} extended logs ${value ? "on" : "off"}`);
     },
     setMinLevel(level: AdFreeLogLevel) {
       minLevel = level;

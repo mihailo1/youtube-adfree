@@ -27,12 +27,69 @@ export type YtPlayerEl = HTMLElement & {
   cueVideoById?: (...args: unknown[]) => void;
 };
 
-export function getVideoId(): string | null {
-  const url = new URL(location.href);
-  if (url.pathname !== "/watch") {
+/** YouTube video id shape (11 chars typical; allow small range for safety). */
+const VIDEO_ID_RE = /^[\w-]{6,15}$/;
+
+function normalizeVideoId(raw: string | null | undefined): string | null {
+  if (!raw || !VIDEO_ID_RE.test(raw)) {
     return null;
   }
-  return url.searchParams.get("v");
+  return raw;
+}
+
+/**
+ * Extract video id from current page URL.
+ * Supports:
+ * - /watch?v=ID
+ * - /live/ID  (live / premieres often use this — was missing → no Ad-Free button)
+ * - /shorts/ID
+ * - /embed/ID
+ * - /v/ID
+ * - youtu.be/ID (if ever on youtube host via redirect)
+ */
+export function getVideoId(): string | null {
+  try {
+    const url = new URL(location.href);
+    const fromQuery = normalizeVideoId(url.searchParams.get("v"));
+    if (fromQuery) {
+      return fromQuery;
+    }
+
+    const path = url.pathname.replace(/\/+$/, "") || "/";
+    // /live/VIDEO_ID, /shorts/VIDEO_ID, /embed/VIDEO_ID, /v/VIDEO_ID
+    const pathMatch = path.match(
+      /^\/(?:live|shorts|embed|v|e)\/([\w-]{6,15})$/
+    );
+    if (pathMatch?.[1]) {
+      return normalizeVideoId(pathMatch[1]);
+    }
+
+    // Rare: /watch/VIDEO_ID
+    const watchSlash = path.match(/^\/watch\/([\w-]{6,15})$/);
+    if (watchSlash?.[1]) {
+      return normalizeVideoId(watchSlash[1]);
+    }
+
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/** True when this page is a player watch surface (not home/search). */
+export function isPlayerWatchPage(): boolean {
+  try {
+    const path = location.pathname.replace(/\/+$/, "") || "/";
+    if (path === "/watch" || path.startsWith("/watch/")) {
+      return true;
+    }
+    if (/^\/(?:live|shorts|embed|v|e)\//.test(path)) {
+      return true;
+    }
+    return getVideoId() != null;
+  } catch {
+    return false;
+  }
 }
 
 export function getPlayerHost(): HTMLElement | null {

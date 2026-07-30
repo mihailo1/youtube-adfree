@@ -53,6 +53,11 @@ export type Options = Prettify<{
   isShowNativeDownload: boolean;
   /** When true, watch pages open in Ad-Free player by default (off by default). */
   isAdFreeDefault: boolean;
+  /**
+   * Dev: verbose Ad-Free diagnostics into session log
+   * (nav, cover, shell, auto-enable skip reasons, park).
+   */
+  isAdFreeDevExtendedLogs: boolean;
   isNotifyOnIdle: boolean;
   isRevealOnComplete: boolean;
   playlistDownloadMode: PlaylistDownloadMode;

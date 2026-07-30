@@ -11,10 +11,12 @@ import {
   BUTTON_ID,
   OBSERVER_DISCONNECT_MS,
   BRIDGE_TIMEOUT_MS,
+  OVERLAY_ID,
   getVideoId,
   getPlayerHost,
   getIframe,
-  getRoot
+  getRoot,
+  isPlayerWatchPage
 } from "@/lib/ad-free/content-dom";
 import {
   postToPlayer,
@@ -24,6 +26,7 @@ import {
 } from "@/lib/ad-free/content-bridge-client";
 import { captureYouTubeSnapshot, isYouTubeShowingAd, pauseYouTubePlayer } from "@/lib/ad-free/content-yt-snapshot";
 import {
+  EARLY_HIDE_CLASS,
   ensureStyles,
   setButtonContents,
   createButton,
@@ -48,8 +51,16 @@ import {
 } from "@/lib/ad-free/chapters";
 import { extractStoryboardSpecFromDocument } from "@/lib/ad-free/storyboard";
 import { extractVisitorDataFromDocument } from "@/lib/ad-free/visitor-data";
-import { createAdFreeLogger } from "@/lib/ad-free/debug-log";
+import {
+  createAdFreeLogger,
+  setAdFreeExtendedLogs
+} from "@/lib/ad-free/debug-log";
 import { createYouTubeParkController } from "@/lib/ad-free/youtube-park";
+import {
+  isYouTubeTheaterMode,
+  toggleYouTubeTheaterMode,
+  watchYouTubeTheaterMode
+} from "@/lib/ad-free/youtube-theater";
 import {
   getAdFreeDefaultEnabled,
   readAdFreeDefaultFromLocalCache,
@@ -57,6 +68,7 @@ import {
   writeAdFreeDefaultLocalCache
 } from "@/lib/ad-free/default-pref";
 import { MessageType, sendMessage } from "@/lib/messaging/messaging";
+import { optionsItem } from "@/lib/storage/storage";
 
 const log = createAdFreeLogger("watch");
 
@@ -75,7 +87,99 @@ let earlyCoverObserver: MutationObserver | null = null;
 /** Scheduled Always Ad-Free resolve/enable retries after early 403 / CS-not-ready. */
 let enableRetryTimer = 0;
 let enableRetryCount = 0;
+/** Peel black cover if enable never lands (Always Ad-Free stuck shell). */
+let coverWatchdogTimer = 0;
+let coverWatchdogRound = 0;
 const youtubePark = createYouTubeParkController();
+
+function pageSnap() {
+  return {
+    path: location.pathname,
+    v: getVideoId(),
+    host: Boolean(getPlayerHost()),
+    earlyCover: hasEarlyCover,
+    earlyHide: document.documentElement.classList.contains(EARLY_HIDE_CLASS),
+    active: isAdFreeActive,
+    iframe: Boolean(getIframe()),
+    parked: youtubePark.isParked()
+  };
+}
+
+function clearCoverWatchdog() {
+  if (coverWatchdogTimer) {
+    window.clearTimeout(coverWatchdogTimer);
+    coverWatchdogTimer = 0;
+  }
+}
+
+/**
+ * Drop black cover / early-hide / park when Ad-Free is NOT owning playback.
+ * Fixes stuck "black square over YT audio" when auto-enable never starts.
+ */
+function releaseCover(reason: string) {
+  if (isAdFreeActive) {
+    log.ext("release cover skipped (ad-free active)", { reason, ...pageSnap() });
+    return;
+  }
+  const hadSomething = hasEarlyCover
+    || document.documentElement.classList.contains(EARLY_HIDE_CLASS)
+    || youtubePark.isParked()
+    || Boolean(document.getElementById(OVERLAY_ID));
+  clearCoverWatchdog();
+  coverWatchdogRound = 0;
+  hasEarlyCover = false;
+  stopEarlyCoverObserver();
+  removeEarlyHideCss();
+  youtubePark.unpark();
+  // Empty black shell (no player iframe yet)
+  if (!getIframe()) {
+    const elOverlay = document.getElementById(OVERLAY_ID);
+    elOverlay?.remove();
+    hideOverlayKeepAlive();
+  } else {
+    hideOverlayKeepAlive();
+  }
+  if (hadSomething) {
+    log.info("released idle cover", { reason, ...pageSnap() });
+  } else {
+    log.ext("release cover noop", { reason, ...pageSnap() });
+  }
+}
+
+function armCoverWatchdog(reason: string) {
+  clearCoverWatchdog();
+  // First tick 8s, second 12s then peel
+  const delay = coverWatchdogRound === 0 ? 8_000 : 12_000;
+  log.ext("cover watchdog armed", { reason, delay, round: coverWatchdogRound, ...pageSnap() });
+  coverWatchdogTimer = window.setTimeout(() => {
+    coverWatchdogTimer = 0;
+    if (isAdFreeActive) {
+      coverWatchdogRound = 0;
+      return;
+    }
+    if (!isAdFreeDefault) {
+      releaseCover("watchdog-pref-off");
+      return;
+    }
+    const videoId = getVideoId();
+    log.warn("cover watchdog fire", {
+      reason,
+      round: coverWatchdogRound,
+      videoId,
+      ...pageSnap()
+    });
+    if (videoId && coverWatchdogRound === 0) {
+      coverWatchdogRound = 1;
+      autoEnableForVideoId = null;
+      isAutoEnabling = false;
+      void tryAutoEnableAdFree();
+      armCoverWatchdog("retry-after-timeout");
+      return;
+    }
+    // Give up — show native YT rather than permanent black square
+    releaseCover("watchdog-give-up");
+  }, delay);
+}
 
 function sleep(ms: number) {
   return new Promise<void>(resolve => {
@@ -556,9 +660,24 @@ async function disableAdFree(elButton?: HTMLButtonElement | null) {
   }
 }
 
-function resetForNavigation() {
-  log.info("reset navigation");
+function resetForNavigation(reason = "nav") {
+  // Avoid log+work spam when MO/ensureUiShell fire without a video id
+  // and there is nothing mounted (was 1000+ "reset navigation" lines).
+  const hasState = isAdFreeActive
+    || Boolean(activeVideoId)
+    || Boolean(getRoot())
+    || hasEarlyCover
+    || isPlayerReady
+    || isAutoEnabling
+    || enableRetryCount > 0
+    || document.documentElement.classList.contains(EARLY_HIDE_CLASS);
+  if (!hasState) {
+    return;
+  }
+  log.info("reset navigation", { reason, ...pageSnap() });
   clearLateChapterMerge();
+  clearCoverWatchdog();
+  coverWatchdogRound = 0;
   isAdFreeActive = false;
   activeVideoId = null;
   lastSnapshot = null;
@@ -589,8 +708,9 @@ async function toggleAdFree(elButton?: HTMLButtonElement | null) {
 }
 
 function ensureUiShell() {
-  if (!getVideoId()) {
-    resetForNavigation();
+  const videoId = getVideoId();
+  if (!videoId) {
+    resetForNavigation("no-video-id");
     return false;
   }
 
@@ -601,6 +721,7 @@ function ensureUiShell() {
   ensureStyles();
   startLayoutTracking();
 
+  const hadButton = Boolean(document.getElementById(BUTTON_ID));
   if (!getRoot()) {
     const elRoot = document.createElement("div");
     elRoot.id = "ytdl-ad-free-root";
@@ -614,12 +735,15 @@ function ensureUiShell() {
 
   const elButton = document.getElementById(BUTTON_ID) as HTMLButtonElement | null;
   if (elButton) {
-    if (isAdFreeActive && activeVideoId === getVideoId()) {
+    if (isAdFreeActive && activeVideoId === videoId) {
       setButtonContents(elButton, "YouTube", { isActive: true });
       showOverlayActive();
     } else if (!isAdFreeActive) {
       setButtonContents(elButton, "Ad-Free", { isActive: false });
       hideOverlayKeepAlive();
+    }
+    if (!hadButton) {
+      log.info("Ad-Free button mounted", { videoId });
     }
   }
 
@@ -628,6 +752,10 @@ function ensureUiShell() {
 
 function waitForButtonTarget() {
   if (ensureUiShell()) {
+    return;
+  }
+  // Non-watch pages: never hang a MutationObserver that spams reset
+  if (!getVideoId()) {
     return;
   }
 
@@ -658,12 +786,14 @@ function stopEarlyCoverObserver() {
  */
 function applyEarlyCover(reason: string): boolean {
   if (hasEarlyCover) {
+    log.ext("early cover already on", { reason, ...pageSnap() });
     return true;
   }
   installEarlyHideCss();
   ensureStyles();
   const elHost = getPlayerHost();
   if (!elHost) {
+    log.ext("early cover wait host", { reason, ...pageSnap() });
     return false;
   }
   hasEarlyCover = true;
@@ -671,23 +801,42 @@ function applyEarlyCover(reason: string): boolean {
   showImmediateCover();
   pauseYouTubePlayer();
   youtubePark.park();
+  log.info("early cover applied", { reason, ...pageSnap() });
+  armCoverWatchdog(`cover:${reason}`);
   return true;
 }
 
 async function tryAutoEnableAdFree() {
-  if (!isAdFreeDefault || isAdFreeActive || isAutoEnabling) {
+  if (!isAdFreeDefault) {
+    log.ext("auto-enable skip", { reason: "pref-off", ...pageSnap() });
+    return;
+  }
+  if (isAdFreeActive) {
+    log.ext("auto-enable skip", { reason: "already-active", ...pageSnap() });
+    return;
+  }
+  if (isAutoEnabling) {
+    log.ext("auto-enable skip", { reason: "in-flight", ...pageSnap() });
     return;
   }
   const videoId = getVideoId();
   if (!videoId) {
+    // Always Ad-Free cache may have painted a black cover with no video — peel or wait
+    log.info("auto-enable skip", { reason: "no-video-id", ...pageSnap() });
+    if (!isPlayerWatchPage()) {
+      releaseCover("not-watch-page");
+    } else {
+      armCoverWatchdog("await-video-id");
+    }
     return;
   }
   // User already opted back to YouTube (or we finished enable) for this id
   if (autoEnableForVideoId === videoId) {
+    log.ext("auto-enable skip", { reason: "already-tried", videoId, ...pageSnap() });
     return;
   }
   isAutoEnabling = true;
-  log.info("auto-enable (default on)", { videoId });
+  log.info("auto-enable (default on)", { videoId, ...pageSnap() });
   try {
     applyEarlyCover("auto-enable");
 
@@ -709,29 +858,36 @@ async function tryAutoEnableAdFree() {
     }
     const elButton = document.getElementById(BUTTON_ID) as HTMLButtonElement | null;
     if (!elButton || !getPlayerHost()) {
-      log.warn("auto-enable deferred — host/button not ready");
+      log.warn("auto-enable deferred — host/button not ready", pageSnap());
       // Keep early hide + schedule retry (do not unpark — flashes YT)
       if (isAdFreeDefault) {
         installEarlyHideCss();
         scheduleEnableRetry("shell-not-ready");
-      } else if (!isAdFreeActive) {
-        setHostActive(false);
-        youtubePark.unpark();
-        removeEarlyHideCss();
+        armCoverWatchdog("shell-not-ready");
+      } else {
+        releaseCover("pref-off-during-enable");
       }
       return;
     }
     // Mark before enable so a parallel nav/toggle cannot double-fire
     autoEnableForVideoId = videoId;
     await enableAdFree(elButton, { preferPlay: true });
+    if (isAdFreeActive) {
+      clearCoverWatchdog();
+      coverWatchdogRound = 0;
+    } else {
+      armCoverWatchdog("enable-returned-inactive");
+    }
   } catch (error) {
     // Allow retry on next navigation if enable failed
     if (autoEnableForVideoId === videoId && !isAdFreeActive) {
       autoEnableForVideoId = null;
     }
     log.warn("auto-enable failed", {
-      message: error instanceof Error ? error.message : String(error)
+      message: error instanceof Error ? error.message : String(error),
+      ...pageSnap()
     });
+    armCoverWatchdog("enable-threw");
   } finally {
     isAutoEnabling = false;
   }
@@ -739,14 +895,22 @@ async function tryAutoEnableAdFree() {
 
 function onWatchNavigation() {
   const videoId = getVideoId();
+  log.ext("nav", {
+    videoId,
+    activeVideoId,
+    isAdFreeDefault,
+    ...pageSnap()
+  });
   // Same video + already enabling/active: ignore SPA noise (yt-navigate-finish mid-load)
   if (videoId && activeVideoId === videoId && (isAdFreeActive || isAutoEnabling || getIframe())) {
+    log.ext("nav ignored (same video active)", { videoId });
     return;
   }
   // New video only — reset early-cover one-shot for the next page
   if (videoId && activeVideoId && videoId !== activeVideoId) {
     hasEarlyCover = false;
     stopEarlyCoverObserver();
+    coverWatchdogRound = 0;
   }
   void persistVisitorData();
   if (!videoId || (activeVideoId && videoId !== activeVideoId)) {
@@ -757,6 +921,8 @@ function onWatchNavigation() {
   waitForButtonTarget();
   if (isAdFreeDefault && videoId && autoEnableForVideoId !== videoId) {
     void tryAutoEnableAdFree();
+  } else if (isAdFreeDefault && !videoId) {
+    log.ext("nav no auto-enable (no videoId)");
   }
 }
 
@@ -768,10 +934,17 @@ function onWatchNavigation() {
 function bootEarlyCoverFromCache() {
   const cachedDefault = readAdFreeDefaultFromLocalCache();
   if (!cachedDefault) {
+    log.ext("boot early cover skip (cache off)");
     return;
   }
   // Optimistic: treat as default-on until storage confirms
   isAdFreeDefault = true;
+  const onWatch = isPlayerWatchPage();
+  log.info("boot early cover from cache", { onWatch, ...pageSnap() });
+  if (!onWatch) {
+    // Don't install black shell on home/search — wait for watch/live navigation
+    return;
+  }
   // Instant CSS hide at +0ms — before #movie_player exists (logs showed ~1.2s of YT play)
   installEarlyHideCss();
   if (applyEarlyCover("document_start-cache")) {
@@ -786,6 +959,15 @@ function bootEarlyCoverFromCache() {
   });
   earlyCoverObserver.observe(document.documentElement, { childList: true, subtree: true });
   window.setTimeout(() => stopEarlyCoverObserver(), OBSERVER_DISCONNECT_MS);
+  armCoverWatchdog("boot-await-host");
+}
+
+function pushTheaterStateToPlayer() {
+  postToPlayer({
+    type: AD_FREE_BRIDGE_TYPE,
+    action: "theater-state",
+    theater: isYouTubeTheaterMode()
+  });
 }
 
 function onBridgeFromPlayer(event: MessageEvent) {
@@ -800,6 +982,8 @@ function onBridgeFromPlayer(event: MessageEvent) {
     if (message.videoId === getVideoId() || message.videoId === activeVideoId) {
       isPlayerReady = true;
     }
+    // Sync theater icon/state once player chrome is up
+    pushTheaterStateToPlayer();
   }
   if (message.action === "state" && isValidSnapshot(message.snapshot)) {
     lastSnapshot = message.snapshot;
@@ -812,6 +996,20 @@ function onBridgeFromPlayer(event: MessageEvent) {
     }
     elRoot.classList.toggle("is-controls-hidden", !message.visible);
   }
+  if (message.action === "toggle-theater") {
+    const next = toggleYouTubeTheaterMode();
+    log.info("theater toggle", { theater: next });
+    // Layout change moves #movie_player — re-sync fixed overlay
+    window.requestAnimationFrame(() => {
+      syncRootLayout();
+      window.setTimeout(() => syncRootLayout(), 50);
+      window.setTimeout(() => syncRootLayout(), 200);
+    });
+    pushTheaterStateToPlayer();
+  }
+  if (message.action === "get-theater") {
+    pushTheaterStateToPlayer();
+  }
 }
 
 export default defineContentScript({
@@ -819,6 +1017,21 @@ export default defineContentScript({
   // Early so Always Ad-Free can cover #movie_player before first paint/play
   runAt: "document_start",
   main(ctx) {
+    // Dev extended logs (localStorage mirror + options) before other boot
+    void optionsItem.getValue().then(options => {
+      const extended = options.isAdFreeDevExtendedLogs === true;
+      setAdFreeExtendedLogs(extended);
+      log.ext("extended logs boot", { extended });
+    }).catch(() => {
+      // ignore
+    });
+    const unwatchOptions = optionsItem.watch(options => {
+      setAdFreeExtendedLogs(options.isAdFreeDevExtendedLogs === true);
+    });
+    ctx.onInvalidated(() => {
+      unwatchOptions();
+    });
+
     bootEarlyCoverFromCache();
 
     window.addEventListener("message", onBridgeFromPlayer);
@@ -826,9 +1039,12 @@ export default defineContentScript({
     void getAdFreeDefaultEnabled().then(enabled => {
       isAdFreeDefault = enabled;
       writeAdFreeDefaultLocalCache(enabled);
-      log.info("default pref loaded", { enabled });
+      log.info("default pref loaded", { enabled, ...pageSnap() });
       if (enabled) {
         void tryAutoEnableAdFree();
+      } else {
+        // Stale cover from previous session cache mismatch
+        releaseCover("pref-loaded-off");
       }
     });
 
@@ -836,15 +1052,20 @@ export default defineContentScript({
       const was = isAdFreeDefault;
       isAdFreeDefault = enabled;
       writeAdFreeDefaultLocalCache(enabled);
-      log.info("default pref changed", { enabled, was });
+      log.info("default pref changed", { enabled, was, ...pageSnap() });
       if (enabled && !was && !isAdFreeActive) {
         // Newly enabled: clear skip so current video auto-enables once
         autoEnableForVideoId = null;
+        coverWatchdogRound = 0;
         void tryAutoEnableAdFree();
+      } else if (!enabled && was && !isAdFreeActive) {
+        // Turning Always Ad-Free off must not leave black shell over YT
+        releaseCover("pref-turned-off");
       }
     });
     ctx.onInvalidated(() => {
       unwatchDefault();
+      clearCoverWatchdog();
     });
 
     onWatchNavigation();
@@ -855,6 +1076,22 @@ export default defineContentScript({
 
     document.addEventListener("yt-navigate-finish", () => {
       onWatchNavigation();
+    });
+
+    // Keep player theater icon in sync if user (or YT) changes layout
+    const unwatchTheater = watchYouTubeTheaterMode(theater => {
+      if (!isAdFreeActive) {
+        return;
+      }
+      postToPlayer({
+        type: AD_FREE_BRIDGE_TYPE,
+        action: "theater-state",
+        theater
+      });
+      syncRootLayout();
+    });
+    ctx.onInvalidated(() => {
+      unwatchTheater();
     });
   }
 });

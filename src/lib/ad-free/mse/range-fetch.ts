@@ -11,6 +11,24 @@ export type RangeFetchResult = {
   contentRange: string | null;
 };
 
+/** True when googlevideo rejected / killed the signed URL (need re-resolve). */
+export function isRangeUrlExpiredError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  if (/Range fetch failed HTTP (403|401|410)/i.test(message)) {
+    return true;
+  }
+  // Network drop often precedes sticky 403 on the same range
+  if (/Failed to fetch|NetworkError|network error|Load failed/i.test(message)) {
+    return true;
+  }
+  return false;
+}
+
+export function isHttp403Error(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /Range fetch failed HTTP 403/i.test(message);
+}
+
 export async function fetchByteRange(
   url: string,
   start: number,
@@ -18,14 +36,24 @@ export async function fetchByteRange(
   signal?: AbortSignal
 ): Promise<RangeFetchResult> {
   const rangeHeader = end == null ? `bytes=${start}-` : `bytes=${start}-${end}`;
-  const response = await fetch(url, {
-    method: "GET",
-    headers: {
-      Range: rangeHeader
-    },
-    credentials: "omit",
-    signal
-  });
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      method: "GET",
+      headers: {
+        Range: rangeHeader
+      },
+      credentials: "omit",
+      signal
+    });
+  } catch (error) {
+    if (signal?.aborted) {
+      throw error;
+    }
+    // Normalize network failures so callers can detect + re-resolve
+    const base = error instanceof Error ? error.message : String(error);
+    throw new Error(`Range fetch failed network for ${rangeHeader}: ${base}`);
+  }
 
   if (!(response.status === 206 || response.status === 200)) {
     throw new Error(`Range fetch failed HTTP ${response.status} for ${rangeHeader}`);

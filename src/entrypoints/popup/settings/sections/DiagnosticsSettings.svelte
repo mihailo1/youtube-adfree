@@ -4,6 +4,14 @@
   import closeIcon from "../../icons/close.svg?raw";
   import SettingsGroup from "../ui/SettingsGroup.svelte";
   import { MessageType, sendMessage } from "@/lib/messaging/messaging";
+  import { setOption } from "@/lib/storage/storage";
+  import type { Options } from "@/types";
+
+  let {
+    options
+  }: {
+    options: Options;
+  } = $props();
 
   let entryCount = $state<number | null>(null);
   let sessionStarted = $state<number | null>(null);
@@ -136,6 +144,36 @@
     </button>
   </div>
 
+  <label class="set-item set-item-label">
+    <div class="set-txt">
+      <span class="set-label">Dev extended logs</span>
+      <span class="set-sub">
+        Extra session lines: navigation, early cover, auto-enable skip reasons, shell/park.
+        Turn on, reproduce, then download the log.
+      </span>
+    </div>
+    <div class="set-trail">
+      <span class="set-switch">
+        <input
+          class="set-switch-input"
+          checked={options.isAdFreeDevExtendedLogs ?? false}
+          onchange={e => {
+            if (!(e.target instanceof HTMLInputElement)) {
+              return;
+            }
+            void setOption({
+              key: "isAdFreeDevExtendedLogs",
+              value: e.target.checked
+            });
+          }}
+          role="switch"
+          type="checkbox"
+        />
+        <span class="set-switch-track"></span>
+      </span>
+    </div>
+  </label>
+
   <div class="set-item diag-hint">
     <div class="set-txt">
       <span class="set-sub">
@@ -153,6 +191,10 @@
     align-items: center;
     min-height: 52px;
     padding: 13px 14px;
+
+    &.set-item-label {
+      cursor: pointer;
+    }
   }
 
   .set-lead {
@@ -200,6 +242,67 @@
     margin-top: 2px;
     color: var(--accent);
     font-size: 0.75rem;
+  }
+
+  .set-trail {
+    display: flex;
+    flex-shrink: 0;
+    gap: 8px;
+    align-items: center;
+    color: var(--fg-muted);
+  }
+
+  .set-switch {
+    position: relative;
+    display: inline-flex;
+    flex-shrink: 0;
+  }
+
+  .set-switch-track {
+    position: relative;
+    display: block;
+    width: 52px;
+    height: 32px;
+    border-radius: 16px;
+    background-color: var(--surface-high);
+    transition: background-color 0.2s;
+
+    &::after {
+      content: "";
+      position: absolute;
+      top: 4px;
+      left: 4px;
+      width: 24px;
+      height: 24px;
+      border-radius: 50%;
+      background: var(--fg);
+      box-shadow: 0 1px 2px rgb(0 0 0 / 20%);
+      transition: transform 0.2s;
+    }
+  }
+
+  .set-switch-input {
+    position: absolute;
+    z-index: 1;
+    width: 100%;
+    height: 100%;
+    margin: 0;
+    opacity: 0;
+    cursor: pointer;
+
+    &:checked + .set-switch-track {
+      background-color: var(--accent);
+    }
+
+    &:checked + .set-switch-track::after {
+      transform: translateX(20px);
+      background: #fff;
+    }
+
+    &:focus-visible + .set-switch-track {
+      outline: 2px solid var(--accent);
+      outline-offset: 2px;
+    }
   }
 
   .diag-actions {

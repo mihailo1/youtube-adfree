@@ -1,6 +1,6 @@
 # Alpha testing — YouTube Ad-Free
 
-Private alpha for the **in-page Ad-Free player** (**v1.2.2**). Not published to the Chrome Web Store yet.
+Private alpha for the **in-page Ad-Free player** (**v1.2.3**). Not published to the Chrome Web Store yet.
 
 ## Install (Chrome / Edge / Brave)
 
@@ -47,13 +47,16 @@ pnpm run pack
 
 | Check | How |
 | --- | --- |
-| Manual Ad-Free | Open a watch page → chip **Ad-Free** (top-left on the player) |
+| Manual Ad-Free | Open a watch **or live** page → chip **Ad-Free** (top-left on the player) |
 | Always Ad-Free | Popup → Settings → **Always use Ad-Free player**, or player ⚙ menu |
-| Quality | Quality chip (top-right) — 720 / 1080 / higher when available |
+| Theater / wide | Button before fullscreen (YT size icons) or hotkey **t** — page layout should widen |
+| Quality | Settings ⚙ → Quality submenu — 720 / 1080 / higher when available |
 | Scrub | Seek mid-video on a long 1080p video |
-| Hotkeys | Space, j/l, arrows, m, f, c (like YouTube) |
-| Switch back | Chip **YouTube** — position should stay close |
+| Long play | Watch 10+ min of 1080p — should recover if CDN range dies (refresh toast) |
+| Hotkeys | Space, j/l, arrows, m, f, c, **t** (like YouTube) |
+| Switch back | Chip **YouTube** — theater state and position should stay close |
 | Mid-ad entry | Open a video that shows a pre-roll with Always Ad-Free on |
+| Extended log | Settings → Diagnostics → **Dev extended logs** On → reproduce → Download log |
 
 ---
 
@@ -91,7 +94,8 @@ No passwords. Stream URLs may appear truncated in rare debug cases; alpha logs d
 
 ## Known limits (alpha)
 
-- Needs a normal `www.youtube.com` watch tab (page-proxy for InnerTube).
+- Needs a normal `www.youtube.com` tab open for page-proxy InnerTube resolve.
+- Works on `/watch?v=` and `/live/…` (and similar player URLs); pure live HLS-only may still fail.
 - MSE scrub can take a moment (full MediaSource reload) — expected for now.
 - Unpacked extensions show “Developer mode” warnings — normal for alpha.
 - Not signed / not auto-updating via the Store.

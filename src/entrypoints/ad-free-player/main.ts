@@ -14,7 +14,8 @@ import {
   isBridgeMessage,
   isValidSnapshot
 } from "@/lib/ad-free/bridge";
-import { createAdFreeLogger } from "@/lib/ad-free/debug-log";
+import { createAdFreeLogger, setAdFreeExtendedLogs } from "@/lib/ad-free/debug-log";
+import { optionsItem } from "@/lib/storage/storage";
 import {
   type KeepPlayingController,
   installKeepPlaying
@@ -36,6 +37,7 @@ import {
 } from "@/lib/ad-free/chapters";
 import {
   type AdFreeCaptionTrack,
+  type AdFreeQualityOption,
   type AdFreeStreamPayload,
   adFreeStreamStorageKey,
   deriveSelectedFields,
@@ -50,6 +52,7 @@ import {
   setAdFreeQualityPref
 } from "@/lib/ad-free/quality-pref";
 import { createPlayerToast } from "@/lib/ad-free/player-toast";
+import { installTheaterButton } from "@/lib/ad-free/theater-button";
 import { MessageType, sendMessage } from "@/lib/messaging/messaging";
 
 const log = createAdFreeLogger("player");
@@ -173,12 +176,32 @@ function isBridgeToPlayer(data: unknown): data is AdFreeBridgeToPlayer {
   return isBridgeMessage(data);
 }
 
+function matchRefreshedQuality(
+  qualities: AdFreeQualityOption[],
+  previous: AdFreeQualityOption
+): AdFreeQualityOption | null {
+  if (qualities.length === 0) {
+    return null;
+  }
+  return qualities.find(item =>
+    item.itag === previous.itag
+    && item.height === previous.height
+    && item.isProgressive === previous.isProgressive
+  )
+    ?? qualities.find(item =>
+      item.height === previous.height && item.isProgressive === previous.isProgressive
+    )
+    ?? qualities.find(item => item.height === previous.height)
+    ?? null;
+}
+
 function wireBridge(
   engine: PlaybackEngine,
   videoId: string,
   keepPlaying: KeepPlayingController | null,
   options?: {
     onSetChapters?: (chapters: AdFreeChapter[]) => void;
+    onTheaterState?: (theater: boolean) => void;
   }
 ) {
   function handler(event: MessageEvent) {
@@ -223,6 +246,11 @@ function wireBridge(
           && typeof item?.title === "string"
       );
       options?.onSetChapters?.(chapters);
+      return;
+    }
+
+    if (message.action === "theater-state") {
+      options?.onTheaterState?.(Boolean(message.theater));
       return;
     }
 
@@ -490,6 +518,9 @@ function renderPlayer(
 
   const toast = createPlayerToast(elPlayerWrap);
 
+  // Live payload ref so quality refresh can rewrite googlevideo URLs mid-session
+  let livePayload = payload;
+
   engine = createPlaybackEngine({
     elPlayer,
     elMount: elPlayerWrap,
@@ -498,6 +529,57 @@ function renderPlayer(
     allowPause: keepPlaying
       ? run => keepPlaying.allowPause(run)
       : undefined,
+    async refreshQuality(current) {
+      log.info("refreshQuality re-resolve", {
+        id: current.id,
+        label: current.label,
+        height: current.height
+      });
+      toast.show("Refreshing stream…", { durationMs: 1_800 });
+      try {
+        const nextPayload = await sendMessage(MessageType.ResolveAdFreeStream, { videoId });
+        const normalized = normalizeAdFreeStreamPayload(nextPayload);
+        if (!normalized || normalized.qualities.length === 0) {
+          log.warn("refreshQuality empty payload");
+          return null;
+        }
+        livePayload = normalized;
+        // Keep storage fresh for reloads
+        try {
+          await browser.storage.session.set({
+            [adFreeStreamStorageKey(videoId)]: normalized
+          });
+        } catch {
+          // ignore
+        }
+        const matched = matchRefreshedQuality(normalized.qualities, current);
+        if (!matched) {
+          log.warn("refreshQuality no matching quality", {
+            want: current.label,
+            have: normalized.qualities.map(item => item.label)
+          });
+          return null;
+        }
+        log.info("refreshQuality ok", {
+          id: matched.id,
+          label: matched.label,
+          host: (() => {
+            try {
+              return new URL(matched.videoUrl).hostname;
+            } catch {
+              return "?";
+            }
+          })()
+        });
+        settingsExtrasHolder.current?.setSelectedQuality(matched.id);
+        return matched;
+      } catch (error) {
+        log.warn("refreshQuality resolve failed", {
+          message: error instanceof Error ? error.message : String(error)
+        });
+        return null;
+      }
+    },
     onStateChange(state) {
       const busy = state === "loading" || state === "switching" || state === "seeking";
       // During bootstrap keep spinner until first ready (ignore brief ready→busy flicker)
@@ -508,7 +590,7 @@ function renderPlayer(
     },
     onQualityChange(quality) {
       settingsExtrasHolder.current?.setSelectedQuality(quality.id);
-      persistSelected(videoId, payload, quality.id);
+      persistSelected(videoId, livePayload, quality.id);
       void setAdFreeQualityPref(quality);
       const elBadge = document.getElementById("quality-badge");
       if (elBadge) {
@@ -533,19 +615,23 @@ function renderPlayer(
       if (!engine) {
         return;
       }
+      // Prefer livePayload (post re-resolve) so menu picks still have valid googlevideo URLs
+      const fresh = livePayload.qualities.find(item => item.id === quality.id)
+        ?? matchRefreshedQuality(livePayload.qualities, quality)
+        ?? quality;
       const resumeAt = engine.getLastKnownGoodTime() > 0
         ? engine.getLastKnownGoodTime()
         : Number(elPlayer.currentTime ?? 0) || 0;
       const wasPlaying = true;
       log.info("quality menu select", {
-        id: quality.id,
-        label: quality.label,
+        id: fresh.id,
+        label: fresh.label,
         resumeAt,
         wasPlaying,
         busy: engine.isBusy()
       });
-      void setAdFreeQualityPref(quality);
-      void engine.loadQuality(quality, { resumeAt, wasPlaying });
+      void setAdFreeQualityPref(fresh);
+      void engine.loadQuality(fresh, { resumeAt, wasPlaying });
     }
   });
   settingsExtrasHolder.current = defaultMenuItem;
@@ -766,10 +852,26 @@ function renderPlayer(
     onSpeedFlash: rate => toast.show(`${rate}×`, { durationMs: 800 })
   });
 
+  // Theater (wide) — mirrors YT ytp-size-button; layout lives on parent page
+  const theaterBtn = isEmbed
+    ? installTheaterButton(elPlayer as unknown as HTMLElement, {
+      onToggle() {
+        postToParent({ type: AD_FREE_BRIDGE_TYPE, action: "toggle-theater" });
+      }
+    })
+    : null;
+  // Ask parent for current theater state (default view if standalone)
+  if (isEmbed) {
+    postToParent({ type: AD_FREE_BRIDGE_TYPE, action: "get-theater" });
+  }
+
   let disposeBridge: (() => void) | null = null;
   if (isEmbed) {
     disposeBridge = wireBridge(activeEngine, videoId, keepPlaying, {
-      onSetChapters: applyChapters
+      onSetChapters: applyChapters,
+      onTheaterState(theater) {
+        theaterBtn?.setTheater(theater);
+      }
     });
   }
 
@@ -967,6 +1069,7 @@ function renderPlayer(
   window.addEventListener("pagehide", () => {
     log.info("pagehide dispose");
     disposeBridge?.();
+    theaterBtn?.dispose();
     hotkeys.dispose();
     toast.dispose();
     defaultMenuItem.dispose();
@@ -994,6 +1097,13 @@ async function init() {
   const elApp = document.getElementById("app");
   if (!elApp) {
     return;
+  }
+
+  try {
+    const options = await optionsItem.getValue();
+    setAdFreeExtendedLogs(options.isAdFreeDevExtendedLogs === true);
+  } catch {
+    // ignore
   }
 
   const params = new URLSearchParams(location.search);

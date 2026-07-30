@@ -37,6 +37,12 @@ export type AdFreeBridgeToPlayer =
     action: "set-chapters";
     videoId: string;
     chapters: Array<{ startSeconds: number; endSeconds: number; title: string }>;
+  }
+  | {
+    type: typeof AD_FREE_BRIDGE_TYPE;
+    /** Parent → player: YouTube theater/wide layout state. */
+    action: "theater-state";
+    theater: boolean;
   };
 
 export type AdFreeBridgeFromPlayer =
@@ -65,6 +71,16 @@ export type AdFreeBridgeFromPlayer =
     /** Vidstack controls visibility — hide top chrome (Ad-Free chip) in lockstep. */
     action: "controls-visible";
     visible: boolean;
+  }
+  | {
+    type: typeof AD_FREE_BRIDGE_TYPE;
+    /** Player → parent: toggle YouTube theater (wide) mode. */
+    action: "toggle-theater";
+  }
+  | {
+    type: typeof AD_FREE_BRIDGE_TYPE;
+    /** Player → parent: ask current theater state. */
+    action: "get-theater";
   };
 
 export function isBridgeMessage(data: unknown): data is AdFreeBridgeToPlayer | AdFreeBridgeFromPlayer {

@@ -10,6 +10,7 @@ import {
   qualitySupportsMse,
   type MseController
 } from "@/lib/ad-free/mse/mse-controller";
+import { isRangeUrlExpiredError } from "@/lib/ad-free/mse/range-fetch";
 import type { AdFreeQualityOption } from "@/lib/ad-free/resolve-stream";
 
 export type PlaybackState =
@@ -70,6 +71,11 @@ type EngineOptions = {
   onError?: (message: string) => void;
   allowPause?: <T>(run: () => T) => T;
   canPlayTimeoutMs?: number;
+  /**
+   * Re-resolve stream (new googlevideo URLs) for the same logical quality.
+   * Used when mid-playback range fetch hits 403 / network death.
+   */
+  refreshQuality?: (current: AdFreeQualityOption) => Promise<AdFreeQualityOption | null>;
 };
 
 const DEFAULT_CAN_PLAY_MS = 25_000;
@@ -428,7 +434,8 @@ export function createPlaybackEngine(options: EngineOptions): PlaybackEngine {
     onQualityChange,
     onError,
     allowPause,
-    canPlayTimeoutMs = DEFAULT_CAN_PLAY_MS
+    canPlayTimeoutMs = DEFAULT_CAN_PLAY_MS,
+    refreshQuality
   } = options;
 
   let state: PlaybackState = "idle";
@@ -1926,6 +1933,26 @@ export function createPlaybackEngine(options: EngineOptions): PlaybackEngine {
       setProviderMuted(true);
     }
 
+    async function resolveFreshUrls() {
+      if (!refreshQuality) {
+        return null;
+      }
+      try {
+        const next = await refreshQuality(activeQuality);
+        if (!next?.audioUrl || !/^https?:\/\//i.test(next.videoUrl)) {
+          return null;
+        }
+        activeQuality = next;
+        onQualityChange?.(next);
+        return { videoUrl: next.videoUrl, audioUrl: next.audioUrl };
+      } catch (error) {
+        log.warn("refreshQuality failed", {
+          message: error instanceof Error ? error.message : String(error)
+        });
+        return null;
+      }
+    }
+
     const controller = createMseController({
       elVideo,
       log: (message, data) => log.info(`mse ${message}`, data),
@@ -1933,41 +1960,81 @@ export function createPlaybackEngine(options: EngineOptions): PlaybackEngine {
         log.debug("mse state", { mseState, gen });
         // Surface mid-pipeline stages as loading for UI overlay
         if (mseState === "moof-align" || mseState === "av-sync" || mseState === "rebuffer"
-          || mseState === "buffering" || mseState === "fetch-init") {
-          if (state !== "seeking" && state !== "switching") {
+          || mseState === "buffering" || mseState === "fetch-init" || mseState === "url-refresh") {
+          if (state !== "seeking" && state !== "switching" && mseState !== "url-refresh") {
             setState("loading");
           }
         }
       },
-      handleUserSeek: false
+      handleUserSeek: false,
+      refreshUrls: resolveFreshUrls
     });
     mse = controller;
 
-    try {
+    async function loadMseOnce(q: AdFreeQualityOption, at: number) {
       const fromPlayer = Number(elPlayer.duration);
       const durationHint = Number.isFinite(fromPlayer) && fromPlayer > 0
         ? fromPlayer
         : streamDurationSeconds > 0
           ? streamDurationSeconds
           : undefined;
+      if (!q.audioUrl) {
+        throw new Error("MSE quality missing audio URL");
+      }
       await controller.load({
-        videoUrl: quality.videoUrl,
-        audioUrl: quality.audioUrl,
-        videoMime: quality.mimeType,
-        startAt: resumeAt,
+        videoUrl: q.videoUrl,
+        audioUrl: q.audioUrl,
+        videoMime: q.mimeType,
+        startAt: at,
         durationHint,
-        label: quality.label
+        label: q.label
       });
+    }
+
+    try {
+      await loadMseOnce(quality, resumeAt);
     } catch (error) {
       if (!isCurrent(gen)) {
         return;
       }
-      disposeMse("load-failed");
-      clearAllTransitionMute();
-      isTransitionLocked = false;
-      setState("error");
-      onError?.(error instanceof Error ? error.message : String(error));
-      return;
+      // Cold load 403 / network: one full re-resolve + retry before hard error
+      if (isRangeUrlExpiredError(error) && refreshQuality) {
+        log.info("MSE load expired — re-resolve + retry", {
+          message: error instanceof Error ? error.message : String(error)
+        });
+        const fresh = await resolveFreshUrls();
+        if (fresh && isCurrent(gen)) {
+          try {
+            await loadMseOnce(activeQuality, resumeAt);
+          } catch (retryError) {
+            if (!isCurrent(gen)) {
+              return;
+            }
+            disposeMse("load-failed-retry");
+            clearAllTransitionMute();
+            isTransitionLocked = false;
+            setState("error");
+            onError?.(
+              retryError instanceof Error ? retryError.message : String(retryError)
+            );
+            return;
+          }
+        } else {
+          disposeMse("load-failed");
+          clearAllTransitionMute();
+          isTransitionLocked = false;
+          setState("error");
+          onError?.(error instanceof Error ? error.message : String(error));
+          return;
+        }
+      } else {
+        disposeMse("load-failed");
+        clearAllTransitionMute();
+        isTransitionLocked = false;
+        setState("error");
+        onError?.(error instanceof Error ? error.message : String(error));
+        return;
+      }
     }
 
     if (!isCurrent(gen)) {
@@ -2318,6 +2385,32 @@ export function createPlaybackEngine(options: EngineOptions): PlaybackEngine {
       } catch (error) {
         if (!isCurrent(gen)) {
           return;
+        }
+        // Sticky 403 mid-session: re-resolve and full load at target once
+        if (isRangeUrlExpiredError(error) && refreshQuality) {
+          log.info("mse seek expired — re-resolve + loadQuality", {
+            target,
+            message: error instanceof Error ? error.message : String(error)
+          });
+          try {
+            const next = await refreshQuality(activeQuality);
+            if (next?.audioUrl && isCurrent(gen)) {
+              activeQuality = next;
+              onQualityChange?.(next);
+              // Drop failed session; loadQuality will rebuild MSE with fresh URLs
+              disposeMse("seek-refresh");
+              isTransitionLocked = false;
+              clearAllTransitionMute();
+              await loadQuality(next, { resumeAt: target, wasPlaying: shouldPlay });
+              return;
+            }
+          } catch (refreshError) {
+            log.warn("mse seek re-resolve failed", {
+              message: refreshError instanceof Error
+                ? refreshError.message
+                : String(refreshError)
+            });
+          }
         }
         log.error("mse seek failed", { error: String(error), target });
         clearAllTransitionMute();

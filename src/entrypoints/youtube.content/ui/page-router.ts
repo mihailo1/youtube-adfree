@@ -1,4 +1,4 @@
-import { cleanupGridUi, injectGridVideoButtons } from "./grid-ui";
+import { cleanupGridUi } from "./grid-ui";
 import { cleanupPanelUi } from "./panel-ui";
 import { cleanupPlaylistUi, handlePlaylistVideoAdditions, injectPlaylistDownloaderUi } from "./playlist-ui";
 import { CONTENT_OPTIONS } from "@/lib/ui/synced-stores.svelte";
@@ -20,6 +20,7 @@ export function handlePageChange({ url, context }: HandlePageChangeParams) {
 
   cleanupPanelUi();
   cleanupPlaylistUi();
+  // Remove any leftover grid chips from older builds / SPA cache
   cleanupGridUi();
 
   setNativeDownloadVisibility(CONTENT_OPTIONS.isShowNativeDownload);
@@ -28,11 +29,9 @@ export function handlePageChange({ url, context }: HandlePageChangeParams) {
     return;
   }
 
+  // Playlist page only — per-video grid download chips disabled (ad-free fork).
   if (pathname === PLAYLIST_PATHNAME) {
     injectPlaylistDownloaderUi(context).catch(() => {});
     handlePlaylistVideoAdditions(context);
-    return;
   }
-
-  injectGridVideoButtons(context);
 }
