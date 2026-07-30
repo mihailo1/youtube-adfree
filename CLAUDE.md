@@ -11,14 +11,14 @@
 
 # Session docs
 
-- `docs/SESSION-NOTES.md` — latest work log (**v1.2.0**)
+- `docs/SESSION-NOTES.md` — latest work log (**v1.2.5**)
 - `docs/CONTINUE-PROMPT.md` — paste-ready agent prompt
 - `docs/COMPACTION-INSTRUCTIONS.md` — Grok `/compact` keep/drop block
 - Parent compact: `../SESSION-COMPACT.md`
 
 # Ad-free player
 
-- Content script: `src/entrypoints/ad-free-watch.content.ts` — toggle + auto **Always Ad-Free** + iframe root **absolute inside `#movie_player`** (never reparent iframe after create — Chromium reloads document on move)
+- Content script: `src/entrypoints/ad-free-watch.content.ts` — toggle + auto **Always Ad-Free** + iframe root **fixed on `document.documentElement`** (CSS anchor to `#movie_player`; never reparent iframe after create — Chromium reloads document on move)
 - Player page: `src/entrypoints/ad-free-player/` — Vidstack shell + PlaybackEngine; `?embed=1` for in-page mode
 - Shared lib: `src/lib/ad-free/` — stream resolve, captions, **chapters**, storyboard, bridge, keep-playing, youtube-time, content-dom, content-overlay, content-yt-snapshot, content-bridge-client, **youtube-park**, **playback-engine**, **quality-menu**, **hotkeys**, **quality-pref**, **player-toast**, **default-pref**, **default-menu-item**, **mse/**
 - Background: `src/entrypoints/background/handlers/ad-free-handlers.ts` — resolve via page-proxy
@@ -39,7 +39,7 @@
 - **Always Ad-Free:** `isAdFreeDefault` default **false**; row in ⚙ Settings via `default-menu-item.ts` (portaled panel inject; **single click + debounce** — do not wire both pointerup and click); auto-enable on watch; manual YouTube sticks for that videoId
 - **Hotkeys:** `hotkeys.ts` — YT-style keys on iframe `window` (single capture listener); seek flash via `player-toast.ts`
 - **Quality memory:** `quality-pref.ts` → `local:adFreeQualityPref` (height + preferProgressive); applied in `renderPlayer` before session/default pick
-- **Mid-ad / cover:** `setHostActive(true)` + park **before** stream resolve (hides ads/bezel/video); root `z-index: 10000`; hide `.ytp-bezel`, large play, all `ytp-ad-*`
+- **Mid-ad / cover:** `setHostActive(true)` + park **before** stream resolve (hides ads/bezel/video); root `z-index: 1990` (below masthead; miniplayer 10000; under-modal for share); hide `.ytp-bezel`, large play, all `ytp-ad-*`
 - **No Save chip in player** — use watch-page download button under the video
 - **MSE duration:** always set `mediaSource.duration` (hint + sidx) — missing duration causes mid-file `currentTime→0` hang on play
 - **MSE mid A/V:** `ensureAvPlayable` extends the short track first; do not clearBuffered audio when it already covers wall-clock seek target

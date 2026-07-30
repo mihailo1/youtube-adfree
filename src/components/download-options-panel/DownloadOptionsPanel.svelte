@@ -108,6 +108,13 @@
       overflow: visible !important;
     }
 
+    /* Keep dropdown above Ad-Free fixed player (z-index 10000) */
+    tp-yt-iron-dropdown:has(.ytdl-panel),
+    tp-yt-iron-dropdown:has([data-ytdl-panel-slot]),
+    tp-yt-iron-dropdown[data-ytdl-watch-dropdown] {
+      z-index: 20000 !important;
+    }
+
     .ytdl-panel {
       display: flex;
       flex-direction: column;
@@ -123,6 +130,8 @@
       color: var(--yt-sys-color-baseline--text-primary, #0f0f0f);
       box-shadow: 0 4px 24px var(--yt-sys-color-baseline--shadow-medium, rgb(0 0 0 / 25%));
       transform-origin: var(--ytdl-panel-origin, bottom) center;
+      position: relative;
+      z-index: 1;
 
       &:focus {
         outline: none;

@@ -177,11 +177,30 @@ const BUTTON_CSS = `
  * Fixed shell on <html> (NOT inside #movie_player).
  * YT Polymer rebuilds #movie_player mid-load and was destroying in-host roots →
  * iframe pagehide + second player-init (visible flicker). Fixed overlay survives that.
+ *
+ * z-index strategy:
+ * - Default 1990: BELOW #masthead-container (~2020). Video scrolls under the
+ *   toolbar like native YT — no JS clip-path (that lagged and made black stripes).
+ * - .is-miniplayer raises above page chrome so the corner player stays on top.
+ * - Download panel iron-dropdown is 20000 (watch-button.css).
+ * - .is-under-modal drops BELOW YT iron-overlay dialogs (share, settings, …).
+ *
+ * Scroll: CSS anchor positioning (Chrome) sticks shell to #movie_player on the
+ * compositor — no 1-frame lag. JS translate3d is fallback only.
  */
+#movie_player {
+  anchor-name: --ytdl-af-player;
+}
+.html5-video-player:not(#movie_player) {
+  anchor-name: --ytdl-af-player;
+}
 #${ROOT_ID} {
   position: fixed;
+  top: 0;
+  left: 0;
   inset: auto;
-  z-index: 2147483646;
+  /* Below masthead (~2020) so toolbar naturally covers scrolling video */
+  z-index: 1990;
   margin: 0;
   padding: 0;
   border: 0;
@@ -189,7 +208,36 @@ const BUTTON_CSS = `
   pointer-events: none;
   overflow: hidden;
   border-radius: 12px;
-  /* size/position set by syncRootLayout() from host rect */
+  /* JS fallback path sets translate3d each scroll */
+  transform: translate3d(0, 0, 0);
+  /* Avoid subpixel bleed / black fringe while scrolling under opaque masthead */
+  backface-visibility: hidden;
+  -webkit-backface-visibility: hidden;
+}
+/* Compositor-synced to player — eliminates scroll "slip" vs host */
+@supports (top: anchor(top)) {
+  #${ROOT_ID}.is-css-anchor {
+    position-anchor: --ytdl-af-player;
+    top: anchor(top);
+    left: anchor(left);
+    width: anchor-size(width);
+    height: anchor-size(height);
+    transform: none !important;
+    will-change: auto;
+  }
+}
+/* Miniplayer floats over page content (masthead no longer relevant) */
+#${ROOT_ID}.is-miniplayer {
+  z-index: 10000;
+}
+/* YT modals (share, paper-dialog) use iron-overlay ~2000+; sit under them */
+#${ROOT_ID}.is-under-modal {
+  z-index: 1000 !important;
+}
+/* True browser fullscreen: win over everything while FS is active */
+#${ROOT_ID}.is-fullscreen {
+  z-index: 2147483646 !important;
+  border-radius: 0 !important;
 }
 #${ROOT_ID} #${BUTTON_ID} {
   pointer-events: auto;
@@ -210,6 +258,11 @@ const BUTTON_CSS = `
   opacity: 1;
   visibility: visible;
   pointer-events: auto;
+}
+/* Under modal: never intercept clicks meant for the dialog */
+#${ROOT_ID}.is-under-modal #${OVERLAY_ID},
+#${ROOT_ID}.is-under-modal #${BUTTON_ID} {
+  pointer-events: none !important;
 }
 #${IFRAME_ID} {
   width: 100%;
@@ -288,13 +341,21 @@ body:has(.${HOST_ACTIVE_CLASS}) [id^="player-overlay-layout"] {
   overflow: hidden !important;
   z-index: -1 !important;
 }
-/* Our root always wins inside the player stacking context */
+/* Root lives on <html>; these rules only matter for legacy in-host mounts */
 #movie_player.${HOST_ACTIVE_CLASS} #${ROOT_ID},
 .html5-video-player.${HOST_ACTIVE_CLASS} #${ROOT_ID} {
   visibility: visible !important;
   opacity: 1 !important;
-  z-index: 2147483646 !important;
+  z-index: 1990 !important;
   pointer-events: none !important;
+}
+#movie_player.${HOST_ACTIVE_CLASS} #${ROOT_ID}.is-miniplayer,
+.html5-video-player.${HOST_ACTIVE_CLASS} #${ROOT_ID}.is-miniplayer {
+  z-index: 10000 !important;
+}
+#movie_player.${HOST_ACTIVE_CLASS} #${ROOT_ID}.is-under-modal,
+.html5-video-player.${HOST_ACTIVE_CLASS} #${ROOT_ID}.is-under-modal {
+  z-index: 1000 !important;
 }
 #movie_player.${HOST_ACTIVE_CLASS} #${ROOT_ID}.${ROOT_ACTIVE_CLASS} #${OVERLAY_ID},
 .html5-video-player.${HOST_ACTIVE_CLASS} #${ROOT_ID}.${ROOT_ACTIVE_CLASS} #${OVERLAY_ID} {
@@ -310,9 +371,133 @@ body:has(.${HOST_ACTIVE_CLASS}) [id^="player-overlay-layout"] {
 
 let layoutRafId = 0;
 let layoutListening = false;
+let hostResizeObserver: ResizeObserver | null = null;
+let observedHost: Element | null = null;
+let modalListening = false;
+
+/** Chrome 125+: position-anchor sticks fixed shell to player without main-thread lag. */
+function supportsCssAnchor(): boolean {
+  try {
+    return typeof CSS !== "undefined"
+      && typeof CSS.supports === "function"
+      && CSS.supports("top", "anchor(top)")
+      && CSS.supports("position-anchor", "--ytdl-af-player");
+  } catch {
+    return false;
+  }
+}
+
+const USE_CSS_ANCHOR = supportsCssAnchor();
+
+/**
+ * True when a YT paper/iron modal should stack above our fixed player shell.
+ * Share panel, confirm dialogs, hotkeys help, etc.
+ *
+ * Prefer backdrop.opened — paper-dialog nodes often stay mounted while closed.
+ * Our download iron-dropdown is NOT included — it uses z-index 20000 instead.
+ */
+export function isYtModalOpen(): boolean {
+  try {
+    // Backdrop is the most reliable "modal is up" signal
+    if (
+      document.querySelector(
+        "tp-yt-iron-overlay-backdrop.opened, iron-overlay-backdrop.opened"
+      )
+    ) {
+      return true;
+    }
+
+    // Explicitly opened paper dialogs (attribute set by iron-overlay)
+    const openedDialogs = document.querySelectorAll(
+      "tp-yt-paper-dialog[opened], tp-yt-paper-dialog[aria-modal='true']"
+    );
+    for (const node of openedDialogs) {
+      if (!(node instanceof HTMLElement)) {
+        continue;
+      }
+      if (node.getAttribute("aria-hidden") === "true") {
+        continue;
+      }
+      const r = node.getBoundingClientRect();
+      if (r.width > 40 && r.height > 40) {
+        return true;
+      }
+    }
+
+    // Share panel (may mount without backdrop.opened for a frame)
+    const elShare = document.querySelector("yt-unified-share-panel-renderer");
+    if (elShare instanceof HTMLElement && elShare.getAttribute("aria-hidden") !== "true") {
+      const style = window.getComputedStyle(elShare);
+      if (style.display !== "none" && style.visibility !== "hidden") {
+        const r = elShare.getBoundingClientRect();
+        if (r.width > 40 && r.height > 40) {
+          return true;
+        }
+      }
+    }
+
+    // Confirm / hotkey help renderers
+    for (const sel of [
+      "yt-confirm-dialog-renderer",
+      "ytd-hotkey-dialog-renderer"
+    ] as const) {
+      const el = document.querySelector(sel);
+      if (!(el instanceof HTMLElement) || el.getAttribute("aria-hidden") === "true") {
+        continue;
+      }
+      const r = el.getBoundingClientRect();
+      if (r.width > 40 && r.height > 40) {
+        return true;
+      }
+    }
+
+    return false;
+  } catch {
+    return false;
+  }
+}
+
+/** Drop under YT modals; raise again when they close. */
+export function syncModalStacking() {
+  const elRoot = getRoot();
+  if (!elRoot) {
+    return;
+  }
+  const under = isYtModalOpen();
+  elRoot.classList.toggle("is-under-modal", under);
+  if (!under) {
+    // Let CSS default (1990 / miniplayer / fullscreen) apply
+    elRoot.style.zIndex = "";
+    return;
+  }
+  // Sit just under the backdrop/dialog stack (iron-overlay assigns z dynamically)
+  let z = 1000;
+  const elBackdrop = document.querySelector(
+    "tp-yt-iron-overlay-backdrop.opened, iron-overlay-backdrop.opened"
+  );
+  if (elBackdrop instanceof HTMLElement) {
+    const bz = Number.parseInt(window.getComputedStyle(elBackdrop).zIndex, 10);
+    if (Number.isFinite(bz) && bz > 2) {
+      z = bz - 1;
+    }
+  } else {
+    // No backdrop — peek at opened paper-dialog z-index
+    const elDialog = document.querySelector(
+      "tp-yt-paper-dialog[opened], tp-yt-paper-dialog[aria-modal='true']"
+    );
+    if (elDialog instanceof HTMLElement) {
+      const dz = Number.parseInt(window.getComputedStyle(elDialog).zIndex, 10);
+      if (Number.isFinite(dz) && dz > 2) {
+        z = dz - 1;
+      }
+    }
+  }
+  elRoot.style.zIndex = String(z);
+}
 
 /**
  * Mirror #movie_player rect onto fixed root (always on documentElement).
+ * Prefer CSS anchor positioning (no main-thread lag). JS translate3d fallback.
  */
 export function syncRootLayout() {
   const elRoot = getRoot();
@@ -325,17 +510,91 @@ export function syncRootLayout() {
     return;
   }
 
+  ensureHostResizeObserver(elHost);
+
   const rect = elHost.getBoundingClientRect();
   if (rect.width < 2 || rect.height < 2) {
     elRoot.style.visibility = "hidden";
     return;
   }
 
-  elRoot.style.visibility = "visible";
-  elRoot.style.top = `${Math.round(rect.top)}px`;
-  elRoot.style.left = `${Math.round(rect.left)}px`;
-  elRoot.style.width = `${Math.round(rect.width)}px`;
-  elRoot.style.height = `${Math.round(rect.height)}px`;
+  if (USE_CSS_ANCHOR) {
+    // Position/size from CSS anchor — clear any leftover JS geometry
+    elRoot.classList.add("is-css-anchor");
+    elRoot.style.top = "";
+    elRoot.style.left = "";
+    elRoot.style.width = "";
+    elRoot.style.height = "";
+    elRoot.style.transform = "";
+  } else {
+    elRoot.classList.remove("is-css-anchor");
+    // Subpixel floats + transform (fallback when anchor unsupported)
+    elRoot.style.top = "0px";
+    elRoot.style.left = "0px";
+    elRoot.style.width = `${rect.width}px`;
+    elRoot.style.height = `${rect.height}px`;
+    elRoot.style.transform = `translate3d(${rect.left}px, ${rect.top}px, 0)`;
+  }
+
+  // Stacking flags before visibility (visibility reads is-fullscreen / miniplayer)
+  const isFs = elHost.classList.contains("ytp-fullscreen")
+    || elHost.hasAttribute("data-fullscreen")
+    || Boolean(document.fullscreenElement);
+  elRoot.style.borderRadius = isFs ? "0px" : "12px";
+  elRoot.classList.toggle("is-fullscreen", isFs);
+  elRoot.classList.toggle("is-miniplayer", isMiniplayerHost(elHost));
+
+  // Never use clip-path under masthead — it lags vs anchors and paints black stripes.
+  // Shell z-index is below masthead so the toolbar covers the video natively.
+  elRoot.style.clipPath = "";
+  applyViewportVisibility(elRoot, rect, elHost);
+
+  // Keep modal stacking in sync (cheap when no dialog)
+  syncModalStacking();
+}
+
+/** Host is (or lives inside) YT miniplayer. */
+function isMiniplayerHost(elHost: Element): boolean {
+  try {
+    if (elHost.closest("ytd-miniplayer")) {
+      return true;
+    }
+    const elMini = document.querySelector("ytd-miniplayer");
+    if (!(elMini instanceof HTMLElement)) {
+      return false;
+    }
+    // Active miniplayer surfaces
+    if (
+      elMini.hasAttribute("active")
+      || elMini.getAttribute("enabled") === ""
+      || elMini.classList.contains("active")
+      || elMini.hasAttribute("expanded")
+    ) {
+      return elMini.contains(elHost) || elHost.id === "movie_player";
+    }
+    return false;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Hide only when fully off-screen / fully under masthead.
+ * Partial overlap: leave visible — masthead paints on top (z-index).
+ */
+function applyViewportVisibility(
+  elRoot: HTMLElement,
+  rect: DOMRect,
+  elHost: Element
+) {
+  // Miniplayer / fullscreen always visible in their rect
+  if (
+    elRoot.classList.contains("is-fullscreen")
+    || isMiniplayerHost(elHost)
+  ) {
+    elRoot.style.visibility = "visible";
+    return;
+  }
 
   const elMasthead = document.querySelector<HTMLElement>(
     "#masthead-container, ytd-masthead, #header"
@@ -343,28 +602,37 @@ export function syncRootLayout() {
   const mastheadBottom = elMasthead
     ? Math.max(0, elMasthead.getBoundingClientRect().bottom)
     : 0;
-  const clipTop = Math.max(0, Math.round(mastheadBottom - rect.top));
-  const clipBottom = Math.max(0, Math.round(rect.bottom - window.innerHeight));
-  const clipLeft = Math.max(0, Math.round(-rect.left));
-  const clipRight = Math.max(0, Math.round(rect.right - window.innerWidth));
 
-  if (rect.bottom <= mastheadBottom + 1 || rect.top >= window.innerHeight - 1) {
+  // Fully covered by toolbar or completely off viewport
+  if (
+    rect.bottom <= mastheadBottom + 0.5
+    || rect.top >= window.innerHeight - 0.5
+    || rect.right <= 0.5
+    || rect.left >= window.innerWidth - 0.5
+  ) {
     elRoot.style.visibility = "hidden";
-    elRoot.style.clipPath = "";
     return;
   }
 
-  if (clipTop > 0 || clipBottom > 0 || clipLeft > 0 || clipRight > 0) {
-    elRoot.style.clipPath = `inset(${clipTop}px ${clipRight}px ${clipBottom}px ${clipLeft}px)`;
-  } else {
-    elRoot.style.clipPath = "";
-  }
+  elRoot.style.visibility = "visible";
+}
 
-  // Square corners in fullscreen
-  const isFs = elHost.classList.contains("ytp-fullscreen")
-    || elHost.hasAttribute("data-fullscreen")
-    || Boolean(document.fullscreenElement);
-  elRoot.style.borderRadius = isFs ? "0px" : "12px";
+/**
+ * Lightweight scroll path when CSS anchors own geometry — visibility only.
+ */
+function syncRootClipOnScroll() {
+  const elRoot = getRoot();
+  const elHost = getPlayerHost();
+  if (!elRoot || !elHost) {
+    return;
+  }
+  const rect = elHost.getBoundingClientRect();
+  if (rect.width < 2 || rect.height < 2) {
+    elRoot.style.visibility = "hidden";
+    return;
+  }
+  elRoot.classList.toggle("is-miniplayer", isMiniplayerHost(elHost));
+  applyViewportVisibility(elRoot, rect, elHost);
 }
 
 /**
@@ -393,15 +661,130 @@ function scheduleLayoutSync() {
   });
 }
 
+/**
+ * Scroll: anchors → clip only; fallback → full geometry every frame (no rAF lag).
+ */
+function onScrollSync() {
+  if (USE_CSS_ANCHOR) {
+    syncRootClipOnScroll();
+  } else {
+    syncRootLayout();
+  }
+}
+
+function ensureHostResizeObserver(elHost: Element) {
+  if (typeof ResizeObserver === "undefined") {
+    return;
+  }
+  if (!hostResizeObserver) {
+    hostResizeObserver = new ResizeObserver(() => {
+      scheduleLayoutSync();
+    });
+  }
+  if (observedHost === elHost) {
+    return;
+  }
+  if (observedHost) {
+    try {
+      hostResizeObserver.unobserve(observedHost);
+    } catch {
+      // ignore
+    }
+  }
+  observedHost = elHost;
+  hostResizeObserver.observe(elHost);
+}
+
+let modalPollTimer = 0;
+
+function startModalTracking() {
+  if (modalListening) {
+    return;
+  }
+  modalListening = true;
+  // Polymer iron-overlay lifecycle (share, settings, confirms)
+  document.addEventListener("iron-overlay-opened", onModalEvent, true);
+  document.addEventListener("iron-overlay-closed", onModalEvent, true);
+  document.addEventListener("iron-overlay-canceled", onModalEvent, true);
+  // Share/open often follows a click; iron events may stay in shadow trees
+  document.addEventListener("click", onPageClickMaybeModal, true);
+  document.addEventListener("keydown", onKeyMaybeModal, true);
+}
+
+function stopModalTracking() {
+  if (!modalListening) {
+    return;
+  }
+  modalListening = false;
+  document.removeEventListener("iron-overlay-opened", onModalEvent, true);
+  document.removeEventListener("iron-overlay-closed", onModalEvent, true);
+  document.removeEventListener("iron-overlay-canceled", onModalEvent, true);
+  document.removeEventListener("click", onPageClickMaybeModal, true);
+  document.removeEventListener("keydown", onKeyMaybeModal, true);
+  if (modalPollTimer) {
+    window.clearInterval(modalPollTimer);
+    modalPollTimer = 0;
+  }
+}
+
+function onModalEvent() {
+  // Layout reflow may lag one tick after iron opens
+  syncModalStacking();
+  window.setTimeout(syncModalStacking, 0);
+  window.setTimeout(syncModalStacking, 50);
+  window.setTimeout(syncModalStacking, 200);
+  armModalPoll();
+}
+
+/** Brief higher-frequency poll after UI actions that often open/close dialogs. */
+function armModalPoll() {
+  if (modalPollTimer) {
+    window.clearInterval(modalPollTimer);
+  }
+  let ticks = 0;
+  modalPollTimer = window.setInterval(() => {
+    syncModalStacking();
+    ticks += 1;
+    // ~2s of 100ms checks after share / esc / click
+    if (ticks >= 20) {
+      window.clearInterval(modalPollTimer);
+      modalPollTimer = 0;
+    }
+  }, 100);
+}
+
+function onPageClickMaybeModal() {
+  window.setTimeout(syncModalStacking, 0);
+  window.setTimeout(syncModalStacking, 80);
+  window.setTimeout(syncModalStacking, 250);
+  armModalPoll();
+}
+
+function onKeyMaybeModal(e: Event) {
+  if (!(e instanceof KeyboardEvent)) {
+    return;
+  }
+  // Esc closes dialogs; some hotkeys open them
+  if (e.key === "Escape" || e.key === "Esc") {
+    window.setTimeout(syncModalStacking, 0);
+    window.setTimeout(syncModalStacking, 80);
+    armModalPoll();
+  }
+}
+
 export function startLayoutTracking() {
   if (layoutListening) {
     return;
   }
   layoutListening = true;
   window.addEventListener("resize", scheduleLayoutSync, true);
-  window.addEventListener("scroll", scheduleLayoutSync, true);
+  // Capture + passive + immediate: stay glued while page scrolls
+  window.addEventListener("scroll", onScrollSync, { capture: true, passive: true });
   document.addEventListener("yt-action", scheduleLayoutSync, true);
   document.addEventListener("fullscreenchange", scheduleLayoutSync, true);
+  startModalTracking();
+  // Initial modal / host observe
+  scheduleLayoutSync();
 }
 
 export function stopLayoutTracking() {
@@ -410,12 +793,34 @@ export function stopLayoutTracking() {
   }
   layoutListening = false;
   window.removeEventListener("resize", scheduleLayoutSync, true);
-  window.removeEventListener("scroll", scheduleLayoutSync, true);
+  window.removeEventListener("scroll", onScrollSync, true);
   document.removeEventListener("yt-action", scheduleLayoutSync, true);
   document.removeEventListener("fullscreenchange", scheduleLayoutSync, true);
+  stopModalTracking();
   if (layoutRafId) {
     window.cancelAnimationFrame(layoutRafId);
     layoutRafId = 0;
+  }
+  if (hostResizeObserver) {
+    try {
+      hostResizeObserver.disconnect();
+    } catch {
+      // ignore
+    }
+    hostResizeObserver = null;
+    observedHost = null;
+  }
+  const elRoot = getRoot();
+  if (elRoot) {
+    elRoot.classList.remove(
+      "is-under-modal",
+      "is-fullscreen",
+      "is-css-anchor",
+      "is-miniplayer"
+    );
+    elRoot.style.zIndex = "";
+    elRoot.style.transform = "";
+    elRoot.style.clipPath = "";
   }
 }
 
@@ -471,7 +876,7 @@ export function showImmediateCover() {
     return;
   }
 
-  const alreadyMounted = Boolean(elRoot)
+  const alreadyMounted = elRoot != null
     && elRoot.classList.contains(ROOT_ACTIVE_CLASS)
     && Boolean(document.getElementById(OVERLAY_ID));
 
@@ -514,6 +919,8 @@ function startCoverEnforcer() {
     if (elRoot && !elRoot.classList.contains(ROOT_ACTIVE_CLASS)) {
       elRoot.classList.add(ROOT_ACTIVE_CLASS);
     }
+    // Share/dialog may open without iron events reaching us (shadow timing)
+    syncModalStacking();
   }, 2_000);
 }
 

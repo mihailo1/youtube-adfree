@@ -36,6 +36,20 @@
   overflow: visible !important;
 }
 
+/*
+ * Ad-Free shell is position:fixed z-index:10000 on <html>.
+ * iron-dropdown defaults ~2000 → panel sat under the player.
+ * !important beats iron-overlay's inline z-index.
+ */
+[data-ytdl-watch-dropdown],
+tp-yt-iron-dropdown[data-ytdl-watch-dropdown],
+tp-yt-iron-dropdown:has([data-ytdl-panel-slot]),
+tp-yt-iron-dropdown:has(.ytdl-panel),
+tp-yt-iron-dropdown:has([id^="ytdl-grid-panel-"]),
+tp-yt-iron-dropdown:has([id^="ytdl-panel-content"]) {
+  z-index: 20000 !important;
+}
+
 [data-ytdl-panel-slot="true"] {
   max-height: var(--ytdl-panel-max-height, none) !important;
 }

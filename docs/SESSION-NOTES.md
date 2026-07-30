@@ -1,15 +1,33 @@
 # Session notes — Ad-Free player (2026-07-30)
 
-Source of truth after context compact. **v1.2.4** on `main`.
+Source of truth after context compact. **v1.2.5** on `main`.
 
 ## Projects
 
 | Project | Path | Status |
 |---------|------|--------|
-| **yt-addfree** | `~/Documents/reps.nosync/yt-addfree` | **v1.2.4** |
+| **yt-addfree** | `~/Documents/reps.nosync/yt-addfree` | **v1.2.5** |
 | **filler** | out of scope this session | — |
 
 ---
+
+## v1.2.5 — overlay stacking + scroll polish
+
+| Fix | Detail |
+|-----|--------|
+| **Share / YT modals under player** | Fixed shell was `z-index: max`; now default **1990** (below masthead ~2020). Open iron-overlay/share → `.is-under-modal` drops under dialog stack. |
+| **Download panel under player** | Watch `tp-yt-iron-dropdown` + `.ytdl-panel` → **`z-index: 20000 !important`** (above shell). |
+| **Scroll slip** | CSS **anchor positioning** ties shell to `#movie_player` on compositor; JS `translate3d` fallback. |
+| **Black stripe flicker under toolbar** | Removed JS **`clip-path`** under masthead (lagged vs anchors). Masthead covers video via z-index like native YT. |
+| **Miniplayer** | `.is-miniplayer` raises shell to 10000 so corner player stays above page chrome. |
+
+### Key files (1.2.5)
+
+```
+src/lib/ad-free/content-overlay.ts
+src/entrypoints/youtube-main.content/watch-button/watch-button.css
+src/components/download-options-panel/DownloadOptionsPanel.svelte
+```
 
 ## v1.2.4 — Always Ad-Free row padding
 
@@ -71,7 +89,9 @@ Hotkeys, quality memory, quality Settings submenu, Always Ad-Free boot, session 
 ### Overlay architecture
 
 - Root **`position: fixed` on `document.documentElement`**
-- Never reparent iframe after create
+- Prefer CSS **`position-anchor` → `#movie_player`**; never reparent iframe after create
+- z-index: shell **1990** (under masthead) / miniplayer **10000** / under-modal / fullscreen max
+- Download dropdown **20000**; no masthead `clip-path`
 - Session log: `session-log.ts` + BG handlers
 
 ---
@@ -90,6 +110,8 @@ Hotkeys, quality memory, quality Settings submenu, Always Ad-Free boot, session 
 10. **`media-video-layout.smallWhen = "never"`** — embed height often &lt; 380  
 11. **Video id from URL** — `/watch?v=`, `/live/`, `/shorts/`, `/embed/`  
 12. **Range 403** → re-resolve, not hard fail forever  
+13. **Shell z-index below masthead** (no JS masthead clip-path); download panel above shell  
+14. **CSS anchor** (or JS translate fallback) for scroll glue  
 
 ---
 

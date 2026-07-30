@@ -10,6 +10,7 @@ Paste into `/compact` or use as the compact summary seed.
 
 ## Version / git
 
+- **v1.2.5** — overlay stacking (modals/download/masthead) + CSS anchor scroll; no masthead clip-path
 - **v1.2.4** — Always Ad-Free settings row `padding: 0 1rem`
 - **v1.2.3** — MSE URL refresh on 403; theater button; `/live/` ids; cover watchdog; extended logs; no grid download chips
 - **v1.2.2** — force large video layout (`smallWhen=never`); chrome bottom controls
@@ -24,6 +25,10 @@ Paste into `/compact` or use as the compact summary seed.
    - youtube-park park → unload after ready → reload on disable
    - Overlay root **fixed on `document.documentElement`**, not `#movie_player`
    - Never reparent ad-free iframe after create
+   - Shell **z-index 1990** (below masthead ~2020); **no JS clip-path** under toolbar
+   - CSS **`position-anchor` / `anchor()`** to `#movie_player` when supported; else `translate3d`
+   - Download panel iron-dropdown **z-index 20000**; share → `.is-under-modal`
+   - Miniplayer → `.is-miniplayer` (10000); fullscreen max
    - **`media-video-layout.smallWhen = "never"`** + `menuGroup = "bottom"`  
      (default smallWhen is `width < 576 \|\| height < 380`; YT embed ~378h put caption/settings/fs at top y≈2)
    - **MSE range death**: re-resolve stream URLs + backoff (do not only retry same range)
@@ -54,6 +59,7 @@ Paste into `/compact` or use as the compact summary seed.
 - Full chrome wait frame dumps (root cause: smallWhen height &lt; 380)
 - Intermediate 403 log dumps once summarized (re-resolve + backoff shipped)
 - Grid download injection history (disabled)
+- Intermediate max-z-index / clip-path experiments (replaced by masthead stacking + anchors)
 
 ## After compact — optional next
 
@@ -64,14 +70,15 @@ Paste into `/compact` or use as the compact summary seed.
 ## Paste block
 
 ```
-COMPACT yt-addfree only @ ~/Documents/reps.nosync/yt-addfree v1.2.4.
+COMPACT yt-addfree only @ ~/Documents/reps.nosync/yt-addfree v1.2.5.
 
-Keep: fixed overlay on documentElement; Always Ad-Free boot + cover watchdog/releaseCover
-(+ settings row padding 0 1rem); single-rendition engine+MSE; range 403 → re-resolve+backoff;
-theater button (YT icons, t); videoId from /watch|/live|/shorts|/embed; quality Settings submenu;
-session Diagnostics + Dev extended logs; chapters videoId-scoped + late set-chapters;
-smallWhen="never"; no grid download chips; no STAGE; build nvm20+pnpm build; alpha-pack;
-mse-phase3 deferred.
+Keep: fixed overlay on documentElement; CSS anchor to #movie_player (JS translate fallback);
+z-index 1990 under masthead (no clip-path); under-modal for share; download dropdown 20000;
+miniplayer 10000; Always Ad-Free boot + cover watchdog/releaseCover (+ row padding 0 1rem);
+single-rendition engine+MSE; range 403 → re-resolve+backoff; theater (YT icons, t);
+videoId /watch|/live|/shorts|/embed; quality Settings submenu; session Diagnostics +
+Dev extended logs; chapters videoId-scoped + late set-chapters; smallWhen="never";
+no grid download chips; no STAGE; build nvm20+pnpm build; alpha-pack; mse-phase3 deferred.
 
 Read docs/SESSION-NOTES.md + CLAUDE.md. Ignore other projects.
 ```

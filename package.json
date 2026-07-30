@@ -1,6 +1,6 @@
 {
   "name": "youtube-adfree",
-  "version": "1.2.4",
+  "version": "1.2.5",
   "description": "Ad-free YouTube player extension with optional download tools (fork of avi12/youtube-downloader).",
   "repository": "https://github.com/mihailo1/youtube-adfree",
   "author": "Avi <avi6106@gmail.com>",
